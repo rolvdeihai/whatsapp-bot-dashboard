@@ -381,7 +381,7 @@ class BotManager {
         this.client = new Client({
           authStrategy: new LocalAuth({ 
             clientId: 'admin',
-            dataPath: path.join(__dirname, '../auth')
+            dataPath: '/app/auth' // Use absolute path to mounted disk
           }),
           puppeteer: {
             headless: true,
