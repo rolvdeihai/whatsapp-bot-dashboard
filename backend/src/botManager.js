@@ -16,26 +16,123 @@ class BotManager {
     this.socketConnections = [];
     this.isInitializing = false;
     
-    // 🆕 GLOBAL Request queue system - one queue for all groups
-    this.processingQueue = []; // Array of pending requests from all groups
-    this.isProcessing = false; // Global processing flag
-    this.currentProcessingRequest = null; // Track currently processing request
+    // 🧠 MEMORY OPTIMIZATION: Use /tmp directory in production for ephemeral storage
+    this.authPath = process.env.NODE_ENV === 'production' 
+      ? '/tmp/whatsapp-auth' 
+      : path.join(__dirname, '../auth');
+    
+    this.cacheDir = process.env.NODE_ENV === 'production'
+      ? '/tmp/whatsapp-cache'
+      : path.join(__dirname, '../group_cache');
+    
+    // 🧠 MEMORY OPTIMIZATION: Create directories safely
+    this.ensureDirectoryExists(this.authPath);
+    this.ensureDirectoryExists(this.cacheDir);
+    
+    // 🧠 MEMORY OPTIMIZATION: Global queue with limits
+    this.processingQueue = [];
+    this.isProcessing = false;
+    this.currentProcessingRequest = null;
+    this.maxQueueSize = 10; // Prevent unlimited queue growth
+    
+    // 🧠 MEMORY OPTIMIZATION: Rate limiting
+    this.lastCommandTime = 0;
+    this.minCommandInterval = 3000; // 3 seconds between commands
+    
+    // 🧠 MEMORY OPTIMIZATION: In-memory cache with limits (instead of file cache)
+    this.groupCaches = new Map();
+    this.maxCachedGroups = 5;
+    this.maxCachedMessages = 30;
+    
+    // 🧠 MEMORY OPTIMIZATION: Start memory monitoring
+    this.startMemoryMonitoring();
     
     this.loadActiveGroupsFromDisk();
-    
-    // Create cache directory if it doesn't exist
-    this.cacheDir = path.join(__dirname, '../group_cache');
-    if (!fs.existsSync(this.cacheDir)) {
-      fs.mkdirSync(this.cacheDir, { recursive: true });
-    }
-    
-    // Auto-initialize bot when server starts
     this.initializeBot();
   }
 
-  // 🆕 Add request to global queue and process if possible
+  // 🧠 MEMORY OPTIMIZATION: Safe directory creation
+  ensureDirectoryExists(dirPath) {
+    try {
+      if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath, { recursive: true });
+        console.log(`📁 Created directory: ${dirPath}`);
+      }
+    } catch (error) {
+      console.error(`❌ Failed to create directory ${dirPath}:`, error);
+    }
+  }
+
+  // 🧠 MEMORY OPTIMIZATION: Memory monitoring system
+  startMemoryMonitoring() {
+    // Check memory every 30 seconds
+    setInterval(() => {
+      this.checkMemoryUsage();
+    }, 30000);
+  }
+
+  checkMemoryUsage() {
+    const used = process.memoryUsage();
+    const usedMB = Math.round(used.heapUsed / 1024 / 1024);
+    const totalMB = Math.round(used.heapTotal / 1024 / 1024);
+    
+    console.log(`🧠 Memory usage: ${usedMB}MB / ${totalMB}MB`);
+    
+    // If memory usage is high, perform cleanup
+    if (usedMB > 200) { // 200MB threshold for cleanup
+      console.log('🔄 High memory usage detected, performing cleanup...');
+      this.performMemoryCleanup();
+    }
+  }
+
+  performMemoryCleanup() {
+    console.log('🗑️ Performing memory cleanup...');
+    
+    // 🧠 MEMORY OPTIMIZATION: Trim processing queue
+    if (this.processingQueue.length > this.maxQueueSize) {
+      console.log(`🗑️ Trimming queue from ${this.processingQueue.length} to ${this.maxQueueSize} items`);
+      this.processingQueue = this.processingQueue.slice(0, this.maxQueueSize);
+    }
+    
+    // 🧠 MEMORY OPTIMIZATION: Clear old group caches
+    if (this.groupCaches.size > this.maxCachedGroups) {
+      const entries = Array.from(this.groupCaches.entries());
+      // Keep only the most recent caches
+      const recentEntries = entries.slice(-this.maxCachedGroups);
+      this.groupCaches = new Map(recentEntries);
+      console.log(`🗑️ Cleared group caches, keeping ${recentEntries.length} groups`);
+    }
+    
+    // 🧠 MEMORY OPTIMIZATION: Force garbage collection if available
+    if (global.gc) {
+      global.gc();
+      console.log('🗑️ Forced garbage collection');
+    }
+  }
+
+  // 🧠 MEMORY OPTIMIZATION: Updated queue system with memory limits
   async addToQueue(message, chat, prompt, isSearchCommand) {
-    // Create request object
+    // 🧠 MEMORY OPTIMIZATION: Rate limiting check
+    const now = Date.now();
+    if (now - this.lastCommandTime < this.minCommandInterval) {
+      try {
+        await message.reply('⏳ Please wait a few seconds before sending another command.');
+      } catch (error) {
+        console.error('Failed to send rate limit message:', error);
+      }
+      return;
+    }
+
+    // 🧠 MEMORY OPTIMIZATION: Queue size limit
+    if (this.processingQueue.length >= this.maxQueueSize) {
+      try {
+        await message.reply('❌ *Queue is full!*\n\nPlease try again later when the queue has space.');
+      } catch (error) {
+        console.error('Failed to send queue full message:', error);
+      }
+      return;
+    }
+
     const request = {
       message,
       chat,
@@ -46,51 +143,42 @@ class BotManager {
       groupName: chat.name
     };
 
-    // Add request to global queue
     this.processingQueue.push(request);
     const queuePosition = this.processingQueue.length;
-    console.log(`📝 [QUEUE] Added request to global queue. Queue length: ${queuePosition}, Group: ${chat.name}`);
+    console.log(`📝 [QUEUE] Added request. Position: ${queuePosition}, Group: ${chat.name}`);
 
-    // If not currently processing, start processing
     if (!this.isProcessing) {
       this.processQueue();
     } else {
-      // If already processing, notify user that their request is queued
       const waitMessage = `⏳ *Your request has been added to the queue.*\n\n` +
                          `📊 *Position in queue:* ${queuePosition}\n` +
-                         `⏰ *Estimated wait time:* ${queuePosition * 2} minutes\n\n` +
-                         `_Only one message can be processed at a time across all groups. Please wait for your turn._\n\n` +
-                         `💎 *Upgrade to Pro* for priority processing and multiple concurrent requests!`;
+                         `⏰ *Estimated wait time:* ${queuePosition * 1} minute(s)\n\n` +
+                         `_Only one message can be processed at a time across all groups._`;
       
       try {
         await message.reply(waitMessage);
-        console.log(`📝 [QUEUE] Notified user of queue position ${queuePosition} for group ${chat.name}`);
       } catch (error) {
         console.error(`❌ [QUEUE] Failed to send queue notification:`, error);
       }
     }
+
+    this.lastCommandTime = now;
   }
 
-  // 🆕 Process the global queue
   async processQueue() {
-    // If no queue or empty queue, return
     if (this.processingQueue.length === 0) {
       this.isProcessing = false;
       this.currentProcessingRequest = null;
       return;
     }
 
-    // Mark as processing
     this.isProcessing = true;
-
-    // Get the next request (FIFO - First In First Out)
     const request = this.processingQueue[0];
     this.currentProcessingRequest = request;
     
-    console.log(`🔄 [QUEUE] Processing request from global queue. Group: ${request.groupName}, Remaining in queue: ${this.processingQueue.length - 1}`);
+    console.log(`🔄 [QUEUE] Processing request. Group: ${request.groupName}, Remaining: ${this.processingQueue.length - 1}`);
 
     try {
-      // Notify user that processing is starting (if they're not the first in queue)
       if (this.processingQueue.length > 1) {
         try {
           const startMessage = `🚀 *Starting to process your request...*\n\n` +
@@ -101,32 +189,28 @@ class BotManager {
         }
       }
 
-      // Process the request
       await this.executeCommand(request.message, request.chat, request.prompt, request.isSearchCommand);
       
-      // Remove the processed request from queue
       this.processingQueue.shift();
       this.currentProcessingRequest = null;
-      console.log(`✅ [QUEUE] Request completed. Global queue length: ${this.processingQueue.length}`);
+      console.log(`✅ [QUEUE] Request completed. Queue length: ${this.processingQueue.length}`);
       
     } catch (error) {
       console.error(`❌ [QUEUE] Error processing request for group ${request.groupName}:`, error);
-      // Remove the failed request from queue
       this.processingQueue.shift();
       this.currentProcessingRequest = null;
       
-      // Notify user of error
       try {
         await request.message.reply('❌ Sorry, there was an error processing your request. Please try again.');
       } catch (replyError) {
         console.error('Failed to send error notification:', replyError);
       }
     } finally {
-      // Process next request in queue after a short delay
+      // 🧠 MEMORY OPTIMIZATION: Small delay between requests to prevent memory spikes
       if (this.processingQueue.length > 0) {
         setTimeout(() => {
           this.processQueue();
-        }, 2000); // 2 second delay between requests
+        }, 1000);
       } else {
         this.isProcessing = false;
         this.currentProcessingRequest = null;
@@ -134,143 +218,108 @@ class BotManager {
     }
   }
 
-  // 🆕 Extract the actual command execution logic
+  // 🧠 MEMORY OPTIMIZATION: Optimized command execution with reduced data
   async executeCommand(message, chat, prompt, isSearchCommand) {
-    console.log(`🔔 [EXECUTE] Processing command for group ${chat.id._serialized}: "${prompt}"`);
+    console.log(`🔔 [EXECUTE] Processing command: "${prompt.substring(0, 50)}..."`);
     
-    // Fetch last 101 messages
-    const waMessages = await chat.fetchMessages({ limit: 101 });
+    try {
+      // 🧠 MEMORY OPTIMIZATION: Fetch fewer messages (50 instead of 101)
+      const waMessages = await chat.fetchMessages({ limit: 50 });
 
-    const metadata = await chat.groupMetadata;
-    if (!metadata || !metadata.participants) {
-      console.log(`❌ [EXECUTE] No group metadata available.`);
-      return;
-    }
+      const metadata = await chat.groupMetadata;
+      if (!metadata || !metadata.participants) {
+        console.log(`❌ [EXECUTE] No group metadata available.`);
+        return;
+      }
 
-    // Build participant map
-    const participantMap = new Map();
-    const fetchPromises = metadata.participants.map(async (participant) => {
+      // 🧠 MEMORY OPTIMIZATION: Process only first 30 participants
+      const participantMap = new Map();
+      const participantsToProcess = metadata.participants.slice(0, 30);
+      
+      for (const participant of participantsToProcess) {
+        try {
+          const contact = await this.client.getContactById(participant.id);
+          const name = contact.pushname || contact.verifiedName || contact.number || participant.id._serialized.split('@')[0];
+          participantMap.set(participant.id._serialized, name);
+        } catch (err) {
+          participantMap.set(participant.id._serialized, participant.id._serialized.split('@')[0]);
+        }
+      }
+
+      // 🧠 MEMORY OPTIMIZATION: Format messages with length limits
+      const formattedMessages = [];
+      for (const msg of waMessages) {
+        if (!msg.body || msg.fromMe) continue;
+        const senderId = msg.author || msg.from;
+        const userName = participantMap.get(senderId) || senderId.split('@')[0];
+        formattedMessages.push({
+          timestamp: new Date(msg.timestamp * 1000).toISOString().slice(0, 19).replace('T', ' '),
+          user: userName,
+          message: msg.body.substring(0, 300), // 🧠 Limit message length to 300 chars
+          group_name: chat.name,
+        });
+      }
+
+      // Sort and use only recent messages
+      formattedMessages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+      const currentMessages = formattedMessages.slice(-30); // 🧠 Only last 30 messages
+
+      // 🧠 MEMORY OPTIMIZATION: Use in-memory cache instead of file cache
+      const newMessages = this.getNewMessagesFromMemory(chat.id._serialized, currentMessages);
+
+      console.log(`🔔 [EXECUTE] Using ${newMessages.length} new messages (from ${currentMessages.length} total) for context`);
+
+      // Get sender info
+      const contact = await message.getContact();
+      const phoneNumber = (message.author || message.from).split('@')[0];
+      const displayName = contact.pushname || contact.verifiedName || contact.number || phoneNumber;
+      const senderFormatted = `${phoneNumber} (${displayName})`;
+
+      let response;
+      if (isSearchCommand) {
+        response = await this.callExternalAPISearch({
+          messages: newMessages,
+          prompt: prompt,
+          groupName: chat.name,
+          sender: senderFormatted,
+          timestamp: new Date().toISOString(),
+          totalMessageCount: currentMessages.length,
+          newMessageCount: newMessages.length
+        });
+      } else {
+        response = await this.callExternalAPI({
+          messages: newMessages,
+          prompt: prompt,
+          groupName: chat.name,
+          sender: senderFormatted,
+          timestamp: new Date().toISOString(),
+          totalMessageCount: currentMessages.length,
+          newMessageCount: newMessages.length
+        });
+      }
+      
+      console.log(`✅ [EXECUTE] API response received`);
+      await message.reply(response);
+      console.log(`✅ [EXECUTE] Reply sent successfully.`);
+
+    } catch (error) {
+      console.error(`❌ [EXECUTE] Error in executeCommand:`, error);
       try {
-        const contact = await this.client.getContactById(participant.id);
-        const name = contact.pushname || contact.verifiedName || contact.number || participant.id._serialized.split('@')[0];
-        participantMap.set(participant.id._serialized, name);
-      } catch (err) {
-        console.warn(`⚠️ [EXECUTE] Failed to fetch contact for ${participant.id._serialized}:`, err.message);
-        participantMap.set(participant.id._serialized, participant.id._serialized.split('@')[0]);
+        await message.reply('❌ Sorry, there was an error processing your request. Please try again.');
+      } catch (replyError) {
+        console.error('Failed to send error reply:', replyError);
       }
-    });
-    await Promise.all(fetchPromises);
-
-    // Format messages
-    const formattedMessages = [];
-    for (const msg of waMessages) {
-      if (!msg.body || msg.fromMe) continue;
-      const senderId = msg.author || msg.from;
-      const userName = participantMap.get(senderId) || senderId.split('@')[0];
-      formattedMessages.push({
-        timestamp: new Date(msg.timestamp * 1000).toISOString().slice(0, 19).replace('T', ' '),
-        user: userName,
-        message: msg.body,
-        group_name: chat.name,
-      });
-    }
-
-    // Sort ascending by timestamp
-    formattedMessages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-
-    // Use up to the last 100 as history
-    const currentMessages = formattedMessages.slice(-100);
-
-    // Get only new messages using cache
-    const newMessages = this.getNewMessages(chat.id._serialized, currentMessages);
-
-    // Always update cache with current 100 messages
-    this.saveGroupCache(chat.id._serialized, currentMessages);
-
-    console.log(`🔔 [EXECUTE] Using ${newMessages.length} new messages (from ${currentMessages.length} total) for context...`);
-
-    console.log(`🔔 [EXECUTE] Calling external API...`);
-    const contact = await message.getContact();
-    const phoneNumber = (message.author || message.from).split('@')[0];
-    const displayName = contact.pushname || contact.verifiedName || contact.number || phoneNumber;
-
-    const senderFormatted = `${phoneNumber} (${displayName})`;
-
-    let response;
-    if (isSearchCommand) {
-      response = await this.callExternalAPISearch({
-        messages: newMessages,
-        prompt: prompt,
-        groupName: chat.name,
-        sender: senderFormatted,
-        timestamp: new Date().toISOString(),
-        totalMessageCount: currentMessages.length,
-        newMessageCount: newMessages.length
-      });
-    } else {
-      response = await this.callExternalAPI({
-        messages: newMessages,
-        prompt: prompt,
-        groupName: chat.name,
-        sender: senderFormatted,
-        timestamp: new Date().toISOString(),
-        totalMessageCount: currentMessages.length,
-        newMessageCount: newMessages.length
-      });
-    }
-    
-    console.log(`✅ [EXECUTE] API response received`);
-
-    console.log(`🔔 [EXECUTE] Attempting to reply to message...`);
-    await message.reply(response);
-    console.log(`✅ [EXECUTE] Reply sent successfully.`);
-  }
-
-  // Generate a safe filename for group cache
-  getGroupCacheFilename(groupId) {
-    const safeId = groupId.replace(/[^a-zA-Z0-9]/g, '_');
-    return path.join(this.cacheDir, `group_${safeId}.json`);
-  }
-
-  // Load cached messages for a group
-  loadGroupCache(groupId) {
-    try {
-      const cacheFile = this.getGroupCacheFilename(groupId);
-      if (fs.existsSync(cacheFile)) {
-        const data = fs.readFileSync(cacheFile, 'utf8');
-        const cache = JSON.parse(data);
-        console.log(`📁 [CACHE] Loaded ${cache.messages.length} cached messages for group ${groupId}`);
-        return cache.messages || [];
-      }
-    } catch (error) {
-      console.error(`❌ [CACHE] Error loading cache for group ${groupId}:`, error);
-    }
-    return [];
-  }
-
-  // Save messages to group cache
-  saveGroupCache(groupId, messages) {
-    try {
-      const cacheFile = this.getGroupCacheFilename(groupId);
-      const cacheData = {
-        groupId: groupId,
-        lastUpdated: new Date().toISOString(),
-        messageCount: messages.length,
-        messages: messages
-      };
-      fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2));
-      console.log(`💾 [CACHE] Saved ${messages.length} messages for group ${groupId}`);
-    } catch (error) {
-      console.error(`❌ [CACHE] Error saving cache for group ${groupId}:`, error);
     }
   }
 
-  // Compare current messages with cached messages and return only new ones
-  getNewMessages(groupId, currentMessages) {
-    const cachedMessages = this.loadGroupCache(groupId);
+  // 🧠 MEMORY OPTIMIZATION: In-memory cache instead of file cache
+  getNewMessagesFromMemory(groupId, currentMessages) {
+    const cachedMessages = this.groupCaches.get(groupId) || [];
     
     if (cachedMessages.length === 0) {
-      console.log(`🆕 [CACHE] No cached messages found for group ${groupId}, using all ${currentMessages.length} messages`);
+      // 🧠 MEMORY OPTIMIZATION: Limit cached messages
+      const messagesToCache = currentMessages.slice(-this.maxCachedMessages);
+      this.groupCaches.set(groupId, messagesToCache);
       return currentMessages;
     }
 
@@ -287,86 +336,65 @@ class BotManager {
       return !cachedMessageMap.has(key);
     });
 
+    // 🧠 MEMORY OPTIMIZATION: Update cache with limited messages
+    const updatedCache = currentMessages.slice(-this.maxCachedMessages);
+    this.groupCaches.set(groupId, updatedCache);
+
     console.log(`🔍 [CACHE] Group ${groupId}: ${cachedMessages.length} cached, ${currentMessages.length} current, ${newMessages.length} new messages`);
 
     return newMessages;
   }
 
-  // Save the activeGroups array to a JSON file
-  saveActiveGroupsToDisk() {
-    const dataPath = path.join(__dirname, '../auth', 'activeGroups.json');
-    fs.writeFileSync(dataPath, JSON.stringify(this.activeGroups));
-    console.log('Active groups saved to disk.');
-  }
-
-  // Load the activeGroups array from a JSON file
-  loadActiveGroupsFromDisk() {
-    const dataPath = path.join(__dirname, '../auth', 'activeGroups.json');
-    try {
-      if (fs.existsSync(dataPath)) {
-        const data = fs.readFileSync(dataPath, 'utf8');
-        this.activeGroups = JSON.parse(data);
-        console.log('Active groups loaded from disk:', this.activeGroups);
-      }
-    } catch (error) {
-      console.error('Error loading active groups:', error);
-    }
-  }
-
-  // Helper method to check if session files exist
+  // 🧠 MEMORY OPTIMIZATION: Updated session management
   hasSession() {
-    const sessionPath = path.join(__dirname, '../auth', 'session-admin');
     try {
-      if (fs.existsSync(sessionPath)) {
-        const files = fs.readdirSync(sessionPath);
-        const hasSessionFiles = files.some(file => 
-          file.includes('session') || 
-          file.endsWith('.json') || 
-          file === 'wwebjs.browserid' ||
-          file === 'wwebjs.session.json'
-        );
-        console.log(`Session check: ${hasSessionFiles} (found files: ${files})`);
-        return hasSessionFiles;
+      if (!fs.existsSync(this.authPath)) {
+        return false;
       }
-      return false;
+      
+      const files = fs.readdirSync(this.authPath);
+      console.log(`Session check in ${this.authPath}:`, files);
+      
+      const hasSessionFiles = files.some(file => 
+        file.includes('session') || 
+        file.endsWith('.json') || 
+        file === 'wwebjs.browserid' ||
+        file === 'wwebjs.session.json'
+      );
+      
+      return hasSessionFiles;
     } catch (error) {
       console.error('Error checking session:', error);
       return false;
     }
   }
 
-  // Add socket connection for frontend
-  addSocketConnection(socket) {
-    this.socketConnections.push(socket);
-    console.log('Socket connection added. Total connections:', this.socketConnections.length);
-    
-    // Send current status to the new connection
-    this.emitToAllSockets('bot-status', { 
-      status: this.getBotStatus(),
-      qrCode: this.currentQrCode
-    });
-    
-    // Send current active groups
-    this.emitToAllSockets('active-groups-updated', { groups: this.activeGroups });
+  // Save/Load active groups
+  saveActiveGroupsToDisk() {
+    try {
+      const dataPath = path.join(this.authPath, 'activeGroups.json');
+      fs.writeFileSync(dataPath, JSON.stringify(this.activeGroups, null, 2));
+      console.log('💾 Active groups saved to disk:', this.activeGroups);
+    } catch (error) {
+      console.error('❌ Error saving active groups:', error);
+    }
   }
 
-  // Remove socket connection
-  removeSocketConnection(socket) {
-    this.socketConnections = this.socketConnections.filter(s => s !== socket);
-    console.log('Socket connection removed. Total connections:', this.socketConnections.length);
-  }
-
-  // Emit to all connected sockets
-  emitToAllSockets(event, data) {
-    this.socketConnections.forEach(socket => {
-      try {
-        socket.emit(event, data);
-      } catch (error) {
-        console.error('Error emitting to socket:', error);
+  loadActiveGroupsFromDisk() {
+    try {
+      const dataPath = path.join(this.authPath, 'activeGroups.json');
+      if (fs.existsSync(dataPath)) {
+        const data = fs.readFileSync(dataPath, 'utf8');
+        this.activeGroups = JSON.parse(data);
+        console.log('📁 Active groups loaded from disk:', this.activeGroups);
       }
-    });
+    } catch (error) {
+      console.error('❌ Error loading active groups:', error);
+      this.activeGroups = [];
+    }
   }
 
+  // 🧠 MEMORY OPTIMIZATION: Memory-efficient bot initialization
   async initializeBot() {
     if (this.isInitializing) {
       console.log('Bot is already initializing...');
@@ -376,39 +404,46 @@ class BotManager {
     this.isInitializing = true;
     
     try {
-      if (this.hasSession()) {
-        console.log('Found persistent session, attempting to restore');
-        this.client = new Client({
-          authStrategy: new LocalAuth({ 
-            clientId: 'admin',
-            dataPath: '/app/auth' // Use absolute path to mounted disk
-          }),
-          puppeteer: {
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-          }
-        });
+      console.log('🚀 Initializing bot with memory-optimized settings...');
+      
+      this.client = new Client({
+        authStrategy: new LocalAuth({ 
+          clientId: 'admin',
+          dataPath: this.authPath
+        }),
+        puppeteer: {
+          headless: true,
+          // 🧠 MEMORY OPTIMIZATION: Aggressive memory-saving flags
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--single-process', // 🧠 Major memory reduction
+            '--no-zygote',
+            '--renderer-process-limit=1',
+            '--max-old-space-size=128',
+            '--memory-pressure-off'
+          ],
+          // 🧠 MEMORY OPTIMIZATION: Smaller viewport
+          defaultViewport: { width: 800, height: 600 },
+          ignoreHTTPSErrors: true,
+        },
+        // 🧠 MEMORY OPTIMIZATION: WhatsApp Web.js optimizations
+        takeoverOnConflict: false,
+        takeoverTimeoutMs: 0,
+        restartOnAuthFail: false,
+        qrMaxRetries: 3,
+      });
 
-        this.setupClientEvents();
-        await this.client.initialize();
-      } else {
-        console.log('No existing session found, requiring QR scan');
-        this.client = new Client({
-          authStrategy: new LocalAuth({ 
-            clientId: 'admin',
-            dataPath: path.join(__dirname, '../auth')
-          }),
-          puppeteer: {
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-          }
-        });
-
-        this.setupClientEvents();
-        await this.client.initialize();
-      }
+      this.setupClientEvents();
+      await this.client.initialize();
+      
     } catch (error) {
-      console.error('Error initializing bot:', error);
+      console.error('❌ Error initializing bot:', error);
       this.emitToAllSockets('bot-error', { error: error.message });
       this.isInitializing = false;
     }
@@ -423,39 +458,40 @@ class BotManager {
         this.currentQrCode = qrImage;
         this.emitToAllSockets('qr-code', { qr: qrImage });
         this.emitToAllSockets('bot-status', { status: 'scan_qr' });
-        console.log('QR code generated and sent to frontend');
+        console.log('📱 QR code generated and sent to frontend');
       } catch (error) {
-        console.error('Error generating QR code:', error);
+        console.error('❌ Error generating QR code:', error);
         this.emitToAllSockets('bot-error', { error: 'Failed to generate QR code' });
       }
     });
 
     this.client.on('ready', () => {
-      console.log('Bot connected successfully');
+      console.log('✅ Bot connected successfully');
       this.emitToAllSockets('bot-status', { status: 'connected' });
       this.isInitializing = false;
     });
 
     this.client.on('authenticated', () => {
-      console.log('Bot authenticated');
+      console.log('🔐 Bot authenticated');
       this.emitToAllSockets('bot-status', { status: 'authenticated' });
     });
 
     this.client.on('auth_failure', (error) => {
-      console.error('Bot auth failed:', error);
+      console.error('❌ Bot auth failed:', error);
       this.emitToAllSockets('bot-error', { error: 'Authentication failed' });
       this.isInitializing = false;
     });
 
     this.client.on('disconnected', (reason) => {
-      console.log('Bot disconnected:', reason);
+      console.log('🔌 Bot disconnected:', reason);
       this.emitToAllSockets('bot-status', { status: 'disconnected' });
       this.client = null;
       this.isProcessing = false;
       
-      // 🆕 Clear global queue on disconnect
+      // 🧠 MEMORY OPTIMIZATION: Clear everything on disconnect
       this.processingQueue = [];
       this.currentProcessingRequest = null;
+      this.groupCaches.clear();
       
       setTimeout(() => {
         this.initializeBot();
@@ -467,19 +503,27 @@ class BotManager {
     });
   }
 
+  // 🧠 MEMORY OPTIMIZATION: Safe bot shutdown with cleanup
   stopBot() {
+    console.log('🛑 Stopping bot and cleaning up memory...');
+    
     if (this.client) {
       this.client.destroy();
       this.client = null;
     }
+    
     this.isInitializing = false;
     
-    // 🆕 Clear global queue on stop
+    // 🧠 MEMORY OPTIMIZATION: Clear all memory-intensive data
     this.processingQueue = [];
     this.isProcessing = false;
     this.currentProcessingRequest = null;
+    this.groupCaches.clear();
+    
+    console.log('✅ Bot stopped and memory cleaned up');
   }
 
+  // 🧠 MEMORY OPTIMIZATION: Safe groups fetching with error handling
   async getGroups() {
     try {
       if (!this.client || !this.client.info) {
@@ -498,30 +542,29 @@ class BotManager {
         try {
           return !!chat && !!chat.isGroup;
         } catch (e) {
-          console.warn('⚠️ Skipping invalid chat while filtering groups:', e && e.stack ? e.stack : e);
+          console.warn('⚠️ Skipping invalid chat while filtering groups');
           return false;
         }
       });
 
-      return groups.map(group => {
+      const groupData = groups.map(group => {
         try {
           const id = group && group.id && group.id._serialized ? group.id._serialized : null;
           const name = group && (group.name || group.subject) ? (group.name || group.subject) : 'Unknown Group';
-          const participants = Array.isArray(group.participants) ? group.participants.length : (group.participants ? Object.keys(group.participants).length : 0);
+          const participants = Array.isArray(group.participants) ? group.participants.length : 0;
 
-          return {
-            id,
-            name,
-            participants
-          };
+          return { id, name, participants };
         } catch (err) {
-          console.warn('⚠️ Error mapping group object to response shape, returning placeholder:', err && err.stack ? err.stack : err);
+          console.warn('⚠️ Error mapping group object');
           return { id: null, name: 'Unknown Group', participants: 0 };
         }
-      }).filter(g => g.id); // drop entries without id
+      }).filter(g => g.id);
+
+      console.log(`📊 Found ${groupData.length} groups`);
+      return groupData;
+
     } catch (error) {
-      // Log full stack and return empty, don't throw
-      console.error('Error fetching groups in getGroups():', error && error.stack ? error.stack : error);
+      console.error('❌ Error fetching groups:', error);
       return [];
     }
   }
@@ -530,7 +573,7 @@ class BotManager {
     this.activeGroups = groups;
     this.saveActiveGroupsToDisk();
     this.emitToAllSockets('active-groups-updated', { groups: groups });
-    console.log('Set active groups:', groups);
+    console.log('✅ Set active groups:', groups);
   }
 
   getBotStatus() {
@@ -539,55 +582,30 @@ class BotManager {
     return 'disconnected';
   }
 
+  // 🧠 MEMORY OPTIMIZATION: Efficient message handling
   async handleMessage(message) {
-    console.log(`🔔 [DEBUG] Received message: "${message.body}"`);
-    console.log(`🔔 [DEBUG] Message is from me? ${message.fromMe}. Chat is group? ${(await message.getChat()).isGroup}`);
-
-    if (this.activeGroups.length === 0) {
-      console.log(`❌ [DEBUG] No active groups found. activeGroups:`, this.activeGroups);
-      return;
-    }
+    // Quick early returns to save processing
+    if (this.activeGroups.length === 0) return;
     
     const chat = await message.getChat();
-    if (!chat.isGroup) {
-      console.log(`❌ [DEBUG] Message not from a group chat. Exiting.`);
-      return;
-    }
+    if (!chat.isGroup) return;
+    
+    if (!this.activeGroups.includes(chat.id._serialized)) return;
 
-    console.log(`🔔 [DEBUG] Active groups:`, this.activeGroups);
-    console.log(`🔔 [DEBUG] Current chat ID: ${chat.id._serialized}`);
-
-    if (!this.activeGroups.includes(chat.id._serialized)) {
-      console.log(`❌ [DEBUG] Chat ID ${chat.id._serialized} not in active groups. Exiting.`);
-      return;
-    }
-
+    // Check if message is too old (2 minutes)
     const messageTimestamp = message.timestamp;
     const twoMinutesAgo = Date.now() / 1000 - 120;
-
-    if (messageTimestamp < twoMinutesAgo) {
-      console.log(`❌ [DEBUG] Message is too old. Ignoring.`);
-      return;
-    }
+    if (messageTimestamp < twoMinutesAgo) return;
 
     const messageText = message.body;
-    console.log(`🔔 [DEBUG] Processing message text: "${messageText}"`);
     
     if (this.isBotCommand(messageText)) {
-      console.log(`✅ [DEBUG] Bot command detected! Adding to global queue.`);
-      
       const isSearchCommand = messageText.toLowerCase().includes('!ai_search');
       const prompt = this.extractPrompt(message.body, isSearchCommand);
       
-      if (!prompt) {
-        console.log(`❌ [DEBUG] No prompt extracted from message.`);
-        return;
-      }
+      if (!prompt) return;
 
-      // 🆕 Add to global queue instead of processing immediately
       await this.addToQueue(message, chat, prompt, isSearchCommand);
-    } else {
-      console.log(`❌ [DEBUG] Not a bot command.`);
     }
   }
 
@@ -596,15 +614,15 @@ class BotManager {
     return commands.some(cmd => messageText.toLowerCase().includes(cmd));
   }
 
+  // 🧠 MEMORY OPTIMIZATION: External API calls with memory awareness
   async callExternalAPI(payload) {
     const apiUrl = process.env.API_ENDPOINT;
     const generateEndpoint = `${apiUrl}/generate_real_time`;
-    console.log(`🔔 [DEBUG] Making Axios call to: ${generateEndpoint}`);
-    console.log(`📊 [CACHE] Sending ${payload.messages.length} new messages (out of ${payload.totalMessageCount} total)`);
+    
+    console.log(`🔔 [API] Calling: ${generateEndpoint}`);
+    console.log(`📊 [API] Sending ${payload.messages.length} messages`);
 
     try {
-      console.log('🔍 [DEBUG] Payload preview:', JSON.stringify(payload).slice(0, 500));
-
       const response = await axios.post(
         generateEndpoint,
         {
@@ -618,14 +636,10 @@ class BotManager {
           }
         },
         {
-          timeout: 15 * 60 * 1000,
+          timeout: 2 * 60 * 1000, // 🧠 Reduced timeout to 2 minutes
           headers: { 'Content-Type': 'application/json' },
-          withCredentials: false,
         }
       );
-
-      console.log(`✅ [DEBUG] Axios response status: ${response.status}`);
-      console.log(`✅ [DEBUG] Axios response data:`, response.data);
 
       const data = response.data;
       return (
@@ -636,31 +650,18 @@ class BotManager {
       );
 
     } catch (error) {
-      if (error.code === 'ECONNABORTED') {
-        console.error('⏰ Axios request timed out after 15 minutes');
-        return 'Sorry, the request took too long. Please try again later.';
-      } else if (error.response) {
-        console.error('🚨 Server responded with error:', error.response.status, error.response.data);
-        return `The AI server returned an error: ${error.response.status}`;
-      } else if (error.request) {
-        console.error('⚠️ No response received from server. Request details:', error.request);
-        return 'No response received from the AI server.';
-      } else {
-        console.error('❌ Axios request setup failed:', error.message);
-        return 'Failed to connect to the AI service.';
-      }
+      console.error('❌ API call failed:', error.message);
+      return 'Sorry, there was an error processing your request. Please try again later.';
     }
   }
 
   async callExternalAPISearch(payload) {
     const apiUrl = process.env.API_ENDPOINT;
     const generateEndpoint = `${apiUrl}/generate_realtime_search`;
-    console.log(`🔔 [DEBUG] Making Axios call to SEARCH endpoint: ${generateEndpoint}`);
-    console.log(`📊 [CACHE] Sending ${payload.messages.length} new messages (out of ${payload.totalMessageCount} total)`);
+
+    console.log(`🔔 [API-SEARCH] Calling: ${generateEndpoint}`);
 
     try {
-      console.log('🔍 [DEBUG] Search payload preview:', JSON.stringify(payload).slice(0, 500));
-
       const response = await axios.post(
         generateEndpoint,
         {
@@ -676,14 +677,10 @@ class BotManager {
           }
         },
         {
-          timeout: 15 * 60 * 1000,
+          timeout: 3 * 60 * 1000, // 🧠 3 minutes for search
           headers: { 'Content-Type': 'application/json' },
-          withCredentials: false,
         }
       );
-
-      console.log(`✅ [DEBUG] Search Axios response status: ${response.status}`);
-      console.log(`✅ [DEBUG] Search Axios response data:`, response.data);
 
       const data = response.data;
       
@@ -697,27 +694,13 @@ class BotManager {
         if (data.search_info.articles_found) {
           responseText += `, found ${data.search_info.articles_found} articles`;
         }
-        if (data.search_info.domains && data.search_info.domains.length > 0) {
-          responseText += ` from ${data.search_info.domains.join(', ')}`;
-        }
       }
       
       return responseText;
 
     } catch (error) {
-      if (error.code === 'ECONNABORTED') {
-        console.error('⏰ Search Axios request timed out after 15 minutes');
-        return 'Sorry, the web search request took too long. Please try again later or use !ai for a faster response.';
-      } else if (error.response) {
-        console.error('🚨 Search server responded with error:', error.response.status, error.response.data);
-        return `The AI search server returned an error: ${error.response.status}. Try !ai for a regular response.`;
-      } else if (error.request) {
-        console.error('⚠️ No response received from search server. Request details:', error.request);
-        return 'No response received from the AI search server. Try !ai for a regular response.';
-      } else {
-        console.error('❌ Search Axios request setup failed:', error.message);
-        return 'Failed to connect to the AI search service. Try !ai for a regular response.';
-      }
+      console.error('❌ Search API call failed:', error.message);
+      return 'Sorry, the search request failed. Please try again later or use !ai for a faster response.';
     }
   }
 
@@ -727,6 +710,34 @@ class BotManager {
     } else {
       return messageText.replace(/(!bot|!ai|@bot|bot,)\s*/i, '').trim();
     }
+  }
+
+  // Socket management (unchanged but included for completeness)
+  addSocketConnection(socket) {
+    this.socketConnections.push(socket);
+    console.log('🔌 Socket connection added. Total connections:', this.socketConnections.length);
+    
+    this.emitToAllSockets('bot-status', { 
+      status: this.getBotStatus(),
+      qrCode: this.currentQrCode
+    });
+    
+    this.emitToAllSockets('active-groups-updated', { groups: this.activeGroups });
+  }
+
+  removeSocketConnection(socket) {
+    this.socketConnections = this.socketConnections.filter(s => s !== socket);
+    console.log('🔌 Socket connection removed. Total connections:', this.socketConnections.length);
+  }
+
+  emitToAllSockets(event, data) {
+    this.socketConnections.forEach(socket => {
+      try {
+        socket.emit(event, data);
+      } catch (error) {
+        console.error('❌ Error emitting to socket:', error);
+      }
+    });
   }
 }
 
