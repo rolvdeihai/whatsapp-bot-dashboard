@@ -9,6 +9,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import BotManager from './botManager.js';
 
+// === Global error handlers (very important for debugging crashes) ===
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason && reason.stack ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err && err.stack ? err.stack : err);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -37,14 +45,21 @@ const botManager = new BotManager();
 // API Routes (no userId needed)
 app.get('/api/groups', async (req, res) => {
   try {
-    console.log('Fetching groups for admin bot');
+    console.log(`[${new Date().toISOString()}] GET /api/groups from ${req.ip} (origin: ${req.headers.origin})`);
     const groups = await botManager.getGroups();
-    res.json(groups || []);
+    // ensure valid JSON
+    if (!Array.isArray(groups)) {
+      console.warn('getGroups returned non-array, converting to empty array');
+      return res.json([]);
+    }
+    return res.json(groups);
   } catch (error) {
-    console.error('Error fetching groups:', error);
-    res.status(500).json({ error: error.message || "Internal server error fetching groups" });
+    // Log stacktrace (global handlers will also capture this)
+    console.error('Error in /api/groups route:', error && error.stack ? error.stack : error);
+    return res.status(500).json({ error: 'Internal server error fetching groups' });
   }
 });
+
 
 app.post('/api/active-groups', async (req, res) => {
   try {

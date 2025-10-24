@@ -483,19 +483,45 @@ class BotManager {
   async getGroups() {
     try {
       if (!this.client || !this.client.info) {
+        console.log('⚠️ Bot client not ready — returning empty group list.');
         return [];
       }
 
       const chats = await this.client.getChats();
-      const groups = chats.filter(chat => chat.isGroup);
-      
-      return groups.map(group => ({
-        id: group.id._serialized,
-        name: group.name,
-        participants: group.participants.length
-      }));
+      if (!Array.isArray(chats)) {
+        console.warn('⚠️ getChats() did not return an array, returning empty list.');
+        return [];
+      }
+
+      // Filter group chats safely
+      const groups = chats.filter(chat => {
+        try {
+          return !!chat && !!chat.isGroup;
+        } catch (e) {
+          console.warn('⚠️ Skipping invalid chat while filtering groups:', e && e.stack ? e.stack : e);
+          return false;
+        }
+      });
+
+      return groups.map(group => {
+        try {
+          const id = group && group.id && group.id._serialized ? group.id._serialized : null;
+          const name = group && (group.name || group.subject) ? (group.name || group.subject) : 'Unknown Group';
+          const participants = Array.isArray(group.participants) ? group.participants.length : (group.participants ? Object.keys(group.participants).length : 0);
+
+          return {
+            id,
+            name,
+            participants
+          };
+        } catch (err) {
+          console.warn('⚠️ Error mapping group object to response shape, returning placeholder:', err && err.stack ? err.stack : err);
+          return { id: null, name: 'Unknown Group', participants: 0 };
+        }
+      }).filter(g => g.id); // drop entries without id
     } catch (error) {
-      console.error('Error fetching groups:', error);
+      // Log full stack and return empty, don't throw
+      console.error('Error fetching groups in getGroups():', error && error.stack ? error.stack : error);
       return [];
     }
   }
