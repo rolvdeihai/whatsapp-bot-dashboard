@@ -3,20 +3,8 @@
 import React, { useState, useEffect } from 'react';
 import io from 'socket.io-client';
 import './App.css';
-import express from 'express';
-import cors from 'cors';
 
 const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000';
-
-const app = express();
-
-app.use(cors({
-  origin: ['https://baby-ai.vercel.app', 'http://localhost:3000'],
-  methods: ['GET', 'POST', 'OPTIONS'],
-  credentials: true
-}));
-
-app.options('*', cors());
 
 function App() {
   const [socket, setSocket] = useState(null);

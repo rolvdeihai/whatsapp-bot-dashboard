@@ -23,7 +23,12 @@ const io = new Server(server, {
   }
 });
 
-app.use(cors());
+const allowedOrigin = process.env.FRONTEND_URL || 'http://localhost:3000';
+app.use(cors({
+  origin: allowedOrigin,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  credentials: true,
+}));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../../build')));
 
