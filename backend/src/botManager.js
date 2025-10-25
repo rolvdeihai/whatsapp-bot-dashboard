@@ -404,7 +404,7 @@ class BotManager {
     this.isInitializing = true;
     
     try {
-      console.log('🚀 Initializing bot with memory-optimized settings...');
+      console.log('🚀 Initializing bot with Browserless...');
       
       this.client = new Client({
         authStrategy: new LocalAuth({ 
@@ -412,29 +412,11 @@ class BotManager {
           dataPath: this.authPath
         }),
         puppeteer: {
-          headless: true,
-          // 🧠 MEMORY OPTIMIZATION: Aggressive memory-saving flags
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu',
-            '--single-process', // 🧠 Major memory reduction
-            '--no-zygote',
-            '--renderer-process-limit=1',
-            '--max-old-space-size=128',
-            '--memory-pressure-off'
-          ],
-          // 🧠 MEMORY OPTIMIZATION: Smaller viewport
-          defaultViewport: { width: 800, height: 600 },
-          ignoreHTTPSErrors: true,
+          // 🎯 Connect to Browserless instead of local browser[citation:2][citation:8]
+          browserWSEndpoint: `${process.env.BROWSERLESS_ENDPOINT}?token=${process.env.BROWSERLESS_TOKEN}`
         },
-        // 🧠 MEMORY OPTIMIZATION: WhatsApp Web.js optimizations
+        // Keep your existing WhatsApp Web.js options
         takeoverOnConflict: false,
-        takeoverTimeoutMs: 0,
         restartOnAuthFail: false,
         qrMaxRetries: 3,
       });
@@ -443,7 +425,7 @@ class BotManager {
       await this.client.initialize();
       
     } catch (error) {
-      console.error('❌ Error initializing bot:', error);
+      console.error('❌ Error initializing bot with Browserless:', error);
       this.emitToAllSockets('bot-error', { error: error.message });
       this.isInitializing = false;
     }
