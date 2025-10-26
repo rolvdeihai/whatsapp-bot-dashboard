@@ -1,4 +1,4 @@
-FROM node:18-bullseye
+FROM node:20-bullseye
 
 # Install minimal required dependencies
 RUN apt-get update && apt-get install -y \
@@ -20,24 +20,29 @@ RUN apt-get update && apt-get install -y \
     libxkbcommon0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create a non-root user
-RUN groupadd -r appuser && useradd -r -g appuser -u 1001 appuser
+# Create app user and its home directory
+RUN groupadd -r appuser && useradd -r -g appuser -u 1001 appuser && \
+    mkdir -p /home/appuser && chown -R appuser:appuser /home/appuser
 
 WORKDIR /app
 
 COPY package*.json ./
 RUN npm install
 
-# Install Playwright Chromium
-RUN npx playwright install chromium
-
-# Change ownership to the non-root user
-RUN chown -R appuser:appuser /app
-
-# Switch to non-root user
+# Switch to non-root user BEFORE installing Playwright
 USER appuser
 
+# Install Chromium under this user
+RUN npx playwright install chromium
+
 COPY . .
+
+# 🆕 Create and set permissions for temp directories
+USER root
+RUN mkdir -p /tmp/whatsapp-bot && \
+    chown -R appuser:appuser /tmp/whatsapp-bot && \
+    chmod 755 /tmp/whatsapp-bot
+USER appuser
 
 EXPOSE 7860
 CMD ["node", "src/index.js"]

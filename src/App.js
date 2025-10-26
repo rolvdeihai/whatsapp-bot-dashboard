@@ -4,8 +4,6 @@ import React, { useState, useEffect } from 'react';
 import io from 'socket.io-client';
 import './App.css';
 
-const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000';
-
 function App() {
   const [socket, setSocket] = useState(null);
   const [qrCode, setQrCode] = useState('');
@@ -26,7 +24,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    const backendUrl = process.env.REACT_APP_BACKEND_URL;
+    const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000';
     const newSocket = io(backendUrl);
     setSocket(newSocket);
 
@@ -72,7 +70,7 @@ function App() {
 
   const checkSessionStatus = async () => {
     try {
-      const response = await fetch(`${backendUrl}/api/bot-status`);
+      const response = await fetch('/api/bot-status');
       const data = await response.json();
       console.log('Session status:', data.status);
       setBotStatus(data.status);
@@ -100,7 +98,8 @@ function App() {
 
   const fetchGroups = async () => {
     try {
-      const response = await fetch(`${backendUrl}/api/groups`);
+      const url = '/api/groups';
+      const response = await fetch(url);
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -133,10 +132,12 @@ function App() {
 
   const saveActiveGroups = async () => {
     try {
-      await fetch(`${backendUrl}/api/active-groups`, {
+      await fetch('/api/active-groups', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ groups: selectedGroups }),
+        body: JSON.stringify({
+          groups: selectedGroups
+        })
       });
       alert('Active groups updated successfully!');
     } catch (error) {
