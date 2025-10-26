@@ -22,23 +22,35 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
-const app = express();
-const server = createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-    methods: ['GET', 'POST']
+    origin: ['https://baby-ai.vercel.app', 'http://localhost:3000'],
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
-const allowedOrigin = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+// ✅ Allow both your deployed frontend and local dev frontend
+const allowedOrigins = [
+  'https://baby-ai.vercel.app',   // production frontend
+  'http://localhost:3000',        // local dev
+];
+
 app.use(cors({
-  origin: allowedOrigin,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      console.warn('Blocked CORS request from origin:', origin);
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST', 'OPTIONS'],
   credentials: true,
 }));
-app.use(express.json());
-app.use(express.static(path.join(__dirname, '../../build')));
 
 const botManager = new BotManager();
 
