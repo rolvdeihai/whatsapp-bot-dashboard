@@ -22,6 +22,8 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
+const app = express();
+const server = createServer(app);
 const io = new Server(server, {
   cors: {
     origin: ['https://baby-ai.vercel.app', 'http://localhost:3000'],
@@ -29,7 +31,6 @@ const io = new Server(server, {
     credentials: true
   }
 });
-
 
 // ✅ Allow both your deployed frontend and local dev frontend
 const allowedOrigins = [
