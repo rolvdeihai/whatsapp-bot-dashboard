@@ -24,3 +24,6 @@ yarn-error.log*
 
 .vercel
 .env
+
+/backend/auth/
+/backend/group_cache/
