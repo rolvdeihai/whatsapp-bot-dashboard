@@ -1,6 +1,4 @@
-//src/App.js
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import io from 'socket.io-client';
 import './App.css';
 
@@ -12,7 +10,6 @@ function App() {
   const [botStatus, setBotStatus] = useState('disconnected');
   const [groups, setGroups] = useState([]);
   const [selectedGroups, setSelectedGroups] = useState(() => {
-    // Try to load saved groups from localStorage
     const savedGroups = localStorage.getItem('activeGroups');
     if (savedGroups) {
       try {
@@ -24,9 +21,96 @@ function App() {
     return [];
   });
   const [isLoading, setIsLoading] = useState(false);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [visibleGroups, setVisibleGroups] = useState(20); // 🚀 LAZY LOADING: Show only 20 initially
+
+  // 🚀 PERFORMANCE: Memoized fetch functions
+  const fetchGroupsPreview = useCallback(async () => {
+    if (groupsLoading) return;
+    
+    setGroupsLoading(true);
+    try {
+      console.log('🚀 Fetching groups preview (fast load)...');
+      const response = await fetch(`${backendUrl}/api/groups/preview`);
+      
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new TypeError('Server did not return JSON');
+      }
+      
+      const previewData = await response.json();
+      setGroups(previewData);
+      console.log(`✅ Loaded ${previewData.length} groups preview`);
+      
+      // 🚀 PERFORMANCE: Load details for selected groups only
+      if (selectedGroups.length > 0) {
+        loadSelectedGroupsDetails(selectedGroups);
+      }
+    } catch (error) {
+      console.error('Error fetching groups preview:', error);
+      // Fallback to regular endpoint
+      await fetchGroups();
+    } finally {
+      setGroupsLoading(false);
+    }
+  }, [groupsLoading, selectedGroups]);
+
+  const loadSelectedGroupsDetails = async (groupIds) => {
+    try {
+      console.log(`🔍 Loading details for ${groupIds.length} selected groups...`);
+      const response = await fetch(`${backendUrl}/api/groups/details`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groupIds }),
+      });
+
+      if (response.ok) {
+        const detailedGroups = await response.json();
+        
+        // Update groups with detailed information
+        setGroups(prevGroups => 
+          prevGroups.map(group => {
+            const detailed = detailedGroups.find(g => g.id === group.id);
+            return detailed ? { ...group, ...detailed } : group;
+          })
+        );
+      }
+    } catch (error) {
+      console.error('Error loading group details:', error);
+    }
+  };
+
+  const fetchGroups = useCallback(async () => {
+    setGroupsLoading(true);
+    try {
+      console.log('🔄 Fetching full groups list...');
+      const response = await fetch(`${backendUrl}/api/groups`);
+      
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new TypeError('Server did not return JSON');
+      }
+      
+      const groupsData = await response.json();
+      setGroups(groupsData);
+      console.log(`✅ Loaded ${groupsData.length} groups`);
+    } catch (error) {
+      console.error('Error fetching groups:', error);
+    } finally {
+      setGroupsLoading(false);
+    }
+  }, []);
+
+  // 🚀 LAZY LOADING: Load more groups when scrolling
+  const loadMoreGroups = () => {
+    setVisibleGroups(prev => prev + 20);
+  };
 
   useEffect(() => {
-    const backendUrl = process.env.REACT_APP_BACKEND_URL;
     const newSocket = io(backendUrl);
     setSocket(newSocket);
 
@@ -41,12 +125,11 @@ function App() {
       setBotStatus(data.status);
       setIsLoading(false);
       
-      // Auto-fetch groups when connected
+      // 🚀 PERFORMANCE: Load groups preview when connected (fast)
       if (data.status === 'connected') {
-        fetchGroups();
+        fetchGroupsPreview();
       }
       
-      // If QR code is included in status update, set it
       if (data.qrCode) {
         setQrCode(data.qrCode);
       }
@@ -64,11 +147,10 @@ function App() {
       setIsLoading(false);
     });
 
-    // Check existing session status on load
     checkSessionStatus();
 
     return () => newSocket.close();
-  }, []);
+  }, [fetchGroupsPreview]);
 
   const checkSessionStatus = async () => {
     try {
@@ -77,7 +159,7 @@ function App() {
       console.log('Session status:', data.status);
       setBotStatus(data.status);
       if (data.status === 'connected') {
-        fetchGroups();
+        fetchGroupsPreview();
       }
     } catch (error) {
       console.log('Error checking session status:', error);
@@ -98,37 +180,18 @@ function App() {
     setQrCode('');
   };
 
-  const fetchGroups = async () => {
-    try {
-      const response = await fetch(`${backendUrl}/api/groups`);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const contentType = response.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
-        const errorText = await response.text();
-        console.error('Received non-JSON response:', errorText.substring(0, 200));
-        throw new TypeError('Server did not return a JSON response.');
-      }
-      
-      const groupsData = await response.json();
-      setGroups(groupsData);
-    } catch (error) {
-      console.error('Error fetching groups:', error);
-    }
-  };
+  const toggleGroup = async (groupId) => {
+    const newSelectedGroups = selectedGroups.includes(groupId)
+      ? selectedGroups.filter(id => id !== groupId)
+      : [...selectedGroups, groupId];
+    
+    setSelectedGroups(newSelectedGroups);
+    localStorage.setItem('activeGroups', JSON.stringify(newSelectedGroups));
 
-  const toggleGroup = (groupId) => {
-    setSelectedGroups(prev => {
-      const newGroups = prev.includes(groupId)
-        ? prev.filter(id => id !== groupId)
-        : [...prev, groupId];
-      
-      localStorage.setItem('activeGroups', JSON.stringify(newGroups));
-      return newGroups;
-    });
+    // 🚀 PERFORMANCE: Load details for newly selected group
+    if (!selectedGroups.includes(groupId)) {
+      await loadSelectedGroupsDetails([groupId]);
+    }
   };
 
   const saveActiveGroups = async () => {
@@ -143,6 +206,36 @@ function App() {
       console.error('Error saving groups:', error);
     }
   };
+
+  const refreshGroups = async () => {
+    try {
+      const response = await fetch(`${backendUrl}/api/groups/refresh`, {
+        method: 'POST',
+      });
+      if (response.ok) {
+        const refreshedGroups = await response.json();
+        setGroups(refreshedGroups);
+        alert('Groups refreshed successfully!');
+      }
+    } catch (error) {
+      console.error('Error refreshing groups:', error);
+    }
+  };
+
+  // 🚀 LAZY LOADING: Infinite scroll implementation
+  useEffect(() => {
+    const handleScroll = () => {
+      if (window.innerHeight + document.documentElement.scrollTop 
+          !== document.documentElement.offsetHeight) return;
+      
+      if (visibleGroups < groups.length) {
+        loadMoreGroups();
+      }
+    };
+
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [visibleGroups, groups.length]);
 
   return (
     <div className="App">
@@ -186,33 +279,68 @@ function App() {
 
         {botStatus === 'connected' && (
           <section className="groups-section">
-            <h2>Select Active Groups</h2>
+            <div className="groups-header">
+              <h2>Select Active Groups</h2>
+              <div className="groups-controls">
+                <button 
+                  onClick={fetchGroupsPreview}
+                  disabled={groupsLoading}
+                  className="btn btn-secondary"
+                >
+                  {groupsLoading ? 'Loading...' : 'Reload Groups'}
+                </button>
+                <button 
+                  onClick={refreshGroups}
+                  className="btn btn-outline"
+                >
+                  Refresh Cache
+                </button>
+              </div>
+            </div>
+            
             <p>Choose which groups the bot should respond in:</p>
             
             <div className="groups-list">
-              {groups.length === 0 ? (
-                <p>Loading groups...</p>
+              {groupsLoading ? (
+                <div className="loading-groups">
+                  <p>Loading groups...</p>
+                  <div className="loading-spinner"></div>
+                </div>
+              ) : groups.length === 0 ? (
+                <p>No groups found or still loading...</p>
               ) : (
-                groups.map(group => (
-                  <div key={group.id} className="group-item">
-                    <label className="group-label">
-                      <input
-                        type="checkbox"
-                        checked={selectedGroups.includes(group.id)}
-                        onChange={() => toggleGroup(group.id)}
-                        className="group-checkbox"
-                      />
-                      <span className="group-name">{group.name}</span>
-                      <span className="group-participants">({group.participants} participants)</span>
-                    </label>
-                  </div>
-                ))
+                <>
+                  {groups.slice(0, visibleGroups).map(group => (
+                    <div key={group.id} className="group-item">
+                      <label className="group-label">
+                        <input
+                          type="checkbox"
+                          checked={selectedGroups.includes(group.id)}
+                          onChange={() => toggleGroup(group.id)}
+                          className="group-checkbox"
+                        />
+                        <span className="group-name">{group.name}</span>
+                        <span className="group-participants">
+                          ({group.participants || '...'} participants)
+                        </span>
+                      </label>
+                    </div>
+                  ))}
+                  
+                  {visibleGroups < groups.length && (
+                    <div className="load-more-container">
+                      <button onClick={loadMoreGroups} className="btn btn-outline">
+                        Load More ({groups.length - visibleGroups} remaining)
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
             </div>
             
             <button 
               onClick={saveActiveGroups} 
-              disabled={selectedGroups.length === 0 || isLoading}
+              disabled={selectedGroups.length === 0 || groupsLoading}
               className="btn btn-success"
             >
               Save Active Groups ({selectedGroups.length} selected)

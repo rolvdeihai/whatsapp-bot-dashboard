@@ -98,6 +98,48 @@ app.get(/^(?!\/api).*/, (req, res) => {
   res.sendFile(path.join(__dirname, '../../build', 'index.html'));
 });
 
+// 🚀 PERFORMANCE: Quick groups preview (fast loading)
+app.get('/api/groups/preview', async (req, res) => {
+  try {
+    console.log(`[${new Date().toISOString()}] GET /api/groups/preview`);
+    const groups = await botManager.getGroupsPreview();
+    return res.json(groups);
+  } catch (error) {
+    console.error('Error in /api/groups/preview:', error);
+    return res.status(500).json({ error: 'Internal server error fetching groups preview' });
+  }
+});
+
+// 🚀 PERFORMANCE: Get detailed info for specific groups only
+app.post('/api/groups/details', async (req, res) => {
+  try {
+    const { groupIds } = req.body;
+    console.log(`[${new Date().toISOString()}] POST /api/groups/details for ${groupIds?.length || 0} groups`);
+    
+    if (!Array.isArray(groupIds)) {
+      return res.status(400).json({ error: 'groupIds must be an array' });
+    }
+
+    const groups = await botManager.getGroupDetails(groupIds);
+    return res.json(groups);
+  } catch (error) {
+    console.error('Error in /api/groups/details:', error);
+    return res.status(500).json({ error: 'Internal server error fetching group details' });
+  }
+});
+
+// 🚀 PERFORMANCE: Refresh groups cache
+app.post('/api/groups/refresh', async (req, res) => {
+  try {
+    console.log(`[${new Date().toISOString()}] POST /api/groups/refresh`);
+    const groups = await botManager.refreshGroups();
+    return res.json(groups);
+  } catch (error) {
+    console.error('Error in /api/groups/refresh:', error);
+    return res.status(500).json({ error: 'Internal server error refreshing groups' });
+  }
+});
+
 // Socket.io for real-time communication
 io.on('connection', (socket) => {
   console.log('Admin client connected:', socket.id);
