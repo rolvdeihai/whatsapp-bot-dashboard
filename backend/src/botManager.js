@@ -51,6 +51,36 @@ class BotManager {
     this.initializeBot();
   }
 
+  // 🧹 NEW: Clear all temporary directories
+  clearAllTmpDirectories() {
+    console.log('🧹 Clearing all temporary directories...');
+    
+    const directoriesToClear = [
+      this.authPath,
+      this.cacheDir,
+      path.join(__dirname, '../auth'),
+      path.join(__dirname, '../group_cache'),
+      path.join(__dirname, '../tmp'),
+      '/tmp/whatsapp-auth',
+      '/tmp/whatsapp-cache'
+    ];
+    
+    directoriesToClear.forEach(dir => {
+      try {
+        if (fs.existsSync(dir)) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          console.log(`✅ Cleared directory: ${dir}`);
+        }
+      } catch (error) {
+        console.error(`❌ Failed to clear directory ${dir}:`, error);
+      }
+    });
+    
+    // Recreate essential directories
+    this.ensureDirectoryExists(this.authPath);
+    this.ensureDirectoryExists(this.cacheDir);
+  }
+
   // 🧠 MEMORY OPTIMIZATION: Safe directory creation
   ensureDirectoryExists(dirPath) {
     try {
@@ -454,6 +484,11 @@ class BotManager {
 
     this.client.on('qr', async (qr) => {
       try {
+        console.log('📱 New QR code generated - clearing old tmp directories...');
+        
+        // 🧹 NEW: Clear all tmp directories when new QR is generated
+        this.clearAllTmpDirectories();
+        
         const qrImage = await QRCode.toDataURL(qr);
         this.currentQrCode = qrImage;
         this.emitToAllSockets('qr-code', { qr: qrImage });
