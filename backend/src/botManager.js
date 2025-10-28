@@ -15,8 +15,9 @@ class BotManager {
     this.activeGroups = [];
     this.socketConnections = [];
     this.isInitializing = false;
+    this.currentQrCode = null; // 🚀 ADD THIS - Missing property initialization
     
-    // 🧠 MEMORY OPTIMIZATION: Use /tmp directory in production for ephemeral storage
+    // 🚀 PERFORMANCE: Optimized paths
     this.authPath = process.env.NODE_ENV === 'production' 
       ? '/tmp/whatsapp-auth' 
       : path.join(__dirname, '../auth');
@@ -25,30 +26,8 @@ class BotManager {
       ? '/tmp/whatsapp-cache'
       : path.join(__dirname, '../group_cache');
     
-    // 🧠 MEMORY OPTIMIZATION: Create directories safely
     this.ensureDirectoryExists(this.authPath);
     this.ensureDirectoryExists(this.cacheDir);
-    
-    // 🧠 MEMORY OPTIMIZATION: Global queue with limits
-    this.processingQueue = [];
-    this.isProcessing = false;
-    this.currentProcessingRequest = null;
-    this.maxQueueSize = 10; // Prevent unlimited queue growth
-    
-    // 🧠 MEMORY OPTIMIZATION: Rate limiting
-    this.lastCommandTime = 0;
-    this.minCommandInterval = 3000; // 3 seconds between commands
-    
-    // 🧠 MEMORY OPTIMIZATION: In-memory cache with limits (instead of file cache)
-    this.groupCaches = new Map();
-    this.maxCachedGroups = 5;
-    this.maxCachedMessages = 30;
-    
-    // 🧠 MEMORY OPTIMIZATION: Start memory monitoring
-    this.startMemoryMonitoring();
-    
-    this.loadActiveGroupsFromDisk();
-    this.initializeBot();
     
     // 🚀 PERFORMANCE: Group caching with lazy loading
     this.groupsCache = {
@@ -57,6 +36,25 @@ class BotManager {
       cacheDuration: 5 * 60 * 1000, // 5 minutes cache
       isUpdating: false
     };
+    
+    // 🧠 MEMORY OPTIMIZATION: Global queue with limits
+    this.processingQueue = [];
+    this.isProcessing = false;
+    this.currentProcessingRequest = null;
+    this.maxQueueSize = 10;
+    
+    // 🧠 MEMORY OPTIMIZATION: Rate limiting
+    this.lastCommandTime = 0;
+    this.minCommandInterval = 3000;
+    
+    // 🧠 MEMORY OPTIMIZATION: In-memory cache with limits
+    this.groupCaches = new Map();
+    this.maxCachedGroups = 5;
+    this.maxCachedMessages = 30;
+    
+    this.startMemoryMonitoring();
+    this.loadActiveGroupsFromDisk();
+    this.initializeBot();
   }
 
   // 🧠 MEMORY OPTIMIZATION: Safe directory creation
@@ -73,7 +71,6 @@ class BotManager {
 
   // 🧠 MEMORY OPTIMIZATION: Memory monitoring system
   startMemoryMonitoring() {
-    // Check memory every 30 seconds
     setInterval(() => {
       this.checkMemoryUsage();
     }, 30000);
@@ -86,8 +83,7 @@ class BotManager {
     
     console.log(`🧠 Memory usage: ${usedMB}MB / ${totalMB}MB`);
     
-    // If memory usage is high, perform cleanup
-    if (usedMB > 200) { // 200MB threshold for cleanup
+    if (usedMB > 200) {
       console.log('🔄 High memory usage detected, performing cleanup...');
       this.performMemoryCleanup();
     }
@@ -96,31 +92,191 @@ class BotManager {
   performMemoryCleanup() {
     console.log('🗑️ Performing memory cleanup...');
     
-    // 🧠 MEMORY OPTIMIZATION: Trim processing queue
     if (this.processingQueue.length > this.maxQueueSize) {
       console.log(`🗑️ Trimming queue from ${this.processingQueue.length} to ${this.maxQueueSize} items`);
       this.processingQueue = this.processingQueue.slice(0, this.maxQueueSize);
     }
     
-    // 🧠 MEMORY OPTIMIZATION: Clear old group caches
     if (this.groupCaches.size > this.maxCachedGroups) {
       const entries = Array.from(this.groupCaches.entries());
-      // Keep only the most recent caches
       const recentEntries = entries.slice(-this.maxCachedGroups);
       this.groupCaches = new Map(recentEntries);
       console.log(`🗑️ Cleared group caches, keeping ${recentEntries.length} groups`);
     }
     
-    // 🧠 MEMORY OPTIMIZATION: Force garbage collection if available
     if (global.gc) {
       global.gc();
       console.log('🗑️ Forced garbage collection');
     }
   }
 
+  // 🚀 PERFORMANCE: Optimized groups fetching with lazy loading
+  async getGroups(forceRefresh = false) {
+    const now = Date.now();
+    if (!forceRefresh && 
+        this.groupsCache.data.length > 0 && 
+        (now - this.groupsCache.lastUpdated) < this.groupsCache.cacheDuration) {
+      console.log('📁 Returning cached groups');
+      return this.groupsCache.data;
+    }
+
+    if (this.groupsCache.isUpdating) {
+      console.log('🔄 Groups update in progress, returning cached data');
+      return this.groupsCache.data;
+    }
+
+    this.groupsCache.isUpdating = true;
+    
+    try {
+      if (!this.client || !this.client.info) {
+        console.log('⚠️ Bot client not ready — returning cached groups or empty array');
+        return this.groupsCache.data.length > 0 ? this.groupsCache.data : [];
+      }
+
+      console.time('🕒 GroupFetchTime');
+      const chats = await this.client.getChats();
+      console.timeEnd('🕒 GroupFetchTime');
+
+      if (!Array.isArray(chats)) {
+        console.warn('⚠️ getChats() did not return an array');
+        return this.groupsCache.data;
+      }
+
+      const groupChats = chats.filter(chat => {
+        try {
+          return !!chat && !!chat.isGroup;
+        } catch (e) {
+          return false;
+        }
+      });
+
+      console.log(`🔍 Processing ${groupChats.length} groups...`);
+
+      const batchSize = 10;
+      const groupData = [];
+
+      for (let i = 0; i < groupChats.length; i += batchSize) {
+        const batch = groupChats.slice(i, i + batchSize);
+        console.log(`🔄 Processing batch ${i/batchSize + 1}/${Math.ceil(groupChats.length/batchSize)}`);
+        
+        const batchPromises = batch.map(async (group) => {
+          try {
+            const id = group?.id?._serialized;
+            const name = group?.name || group?.subject || 'Unknown Group';
+            const participants = Array.isArray(group.participants) ? group.participants.length : 0;
+
+            return { id, name, participants };
+          } catch (err) {
+            console.warn('⚠️ Error processing group:', err.message);
+            return null;
+          }
+        });
+
+        const batchResults = await Promise.allSettled(batchPromises);
+        const validResults = batchResults
+          .filter(result => result.status === 'fulfilled' && result.value !== null)
+          .map(result => result.value);
+
+        groupData.push(...validResults);
+        
+        if (i + batchSize < groupChats.length) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
+
+      const validGroups = groupData.filter(g => g && g.id);
+      
+      this.groupsCache.data = validGroups;
+      this.groupsCache.lastUpdated = now;
+      this.groupsCache.isUpdating = false;
+
+      console.log(`✅ Loaded ${validGroups.length} groups (cached)`);
+      return validGroups;
+
+    } catch (error) {
+      console.error('❌ Error fetching groups:', error);
+      this.groupsCache.isUpdating = false;
+      return this.groupsCache.data.length > 0 ? this.groupsCache.data : [];
+    }
+  }
+
+  // 🚀 PERFORMANCE: Quick groups preview (fast loading)
+  async getGroupsPreview() {
+    try {
+      if (!this.client || !this.client.info) {
+        return [];
+      }
+
+      const chats = await this.client.getChats();
+      const groupChats = chats.filter(chat => chat?.isGroup);
+
+      const previewData = groupChats.slice(0, 50).map(group => ({
+        id: group?.id?._serialized,
+        name: group?.name || group?.subject || 'Unknown Group',
+        participants: '...'
+      }));
+
+      return previewData;
+    } catch (error) {
+      console.error('Error fetching groups preview:', error);
+      return [];
+    }
+  }
+
+  // 🚀 PERFORMANCE: Get detailed info for specific groups only
+  async getGroupDetails(groupIds) {
+    try {
+      if (!this.client || !this.client.info) {
+        return [];
+      }
+
+      const chats = await this.client.getChats();
+      const detailedGroups = [];
+
+      for (const groupId of groupIds) {
+        const group = chats.find(chat => 
+          chat?.isGroup && chat?.id?._serialized === groupId
+        );
+
+        if (group) {
+          try {
+            const metadata = await group.groupMetadata?.catch(() => null);
+            const participants = metadata?.participants?.length || group.participants?.length || 0;
+            
+            detailedGroups.push({
+              id: groupId,
+              name: group.name || group.subject || 'Unknown Group',
+              participants,
+              description: metadata?.description || '',
+              createdAt: metadata?.creation || 0
+            });
+          } catch (err) {
+            detailedGroups.push({
+              id: groupId,
+              name: group.name || group.subject || 'Unknown Group',
+              participants: group.participants?.length || 0,
+              description: '',
+              createdAt: 0
+            });
+          }
+        }
+      }
+
+      return detailedGroups;
+    } catch (error) {
+      console.error('Error fetching group details:', error);
+      return [];
+    }
+  }
+
+  // 🚀 PERFORMANCE: Refresh groups cache
+  async refreshGroups() {
+    console.log('🔄 Manually refreshing groups cache...');
+    return await this.getGroups(true);
+  }
+
   // 🧠 MEMORY OPTIMIZATION: Updated queue system with memory limits
   async addToQueue(message, chat, prompt, isSearchCommand) {
-    // 🧠 MEMORY OPTIMIZATION: Rate limiting check
     const now = Date.now();
     if (now - this.lastCommandTime < this.minCommandInterval) {
       try {
@@ -131,7 +287,6 @@ class BotManager {
       return;
     }
 
-    // 🧠 MEMORY OPTIMIZATION: Queue size limit
     if (this.processingQueue.length >= this.maxQueueSize) {
       try {
         await message.reply('❌ *Queue is full!*\n\nPlease try again later when the queue has space.');
@@ -214,7 +369,6 @@ class BotManager {
         console.error('Failed to send error notification:', replyError);
       }
     } finally {
-      // 🧠 MEMORY OPTIMIZATION: Small delay between requests to prevent memory spikes
       if (this.processingQueue.length > 0) {
         setTimeout(() => {
           this.processQueue();
@@ -231,7 +385,6 @@ class BotManager {
     console.log(`🔔 [EXECUTE] Processing command: "${prompt.substring(0, 50)}..."`);
     
     try {
-      // 🧠 MEMORY OPTIMIZATION: Fetch fewer messages (50 instead of 101)
       const waMessages = await chat.fetchMessages({ limit: 50 });
 
       const metadata = await chat.groupMetadata;
@@ -240,7 +393,6 @@ class BotManager {
         return;
       }
 
-      // 🧠 MEMORY OPTIMIZATION: Process only first 30 participants
       const participantMap = new Map();
       const participantsToProcess = metadata.participants.slice(0, 30);
       
@@ -254,7 +406,6 @@ class BotManager {
         }
       }
 
-      // 🧠 MEMORY OPTIMIZATION: Format messages with length limits
       const formattedMessages = [];
       for (const msg of waMessages) {
         if (!msg.body || msg.fromMe) continue;
@@ -263,21 +414,18 @@ class BotManager {
         formattedMessages.push({
           timestamp: new Date(msg.timestamp * 1000).toISOString().slice(0, 19).replace('T', ' '),
           user: userName,
-          message: msg.body.substring(0, 300), // 🧠 Limit message length to 300 chars
+          message: msg.body.substring(0, 300),
           group_name: chat.name,
         });
       }
 
-      // Sort and use only recent messages
       formattedMessages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-      const currentMessages = formattedMessages.slice(-30); // 🧠 Only last 30 messages
+      const currentMessages = formattedMessages.slice(-30);
 
-      // 🧠 MEMORY OPTIMIZATION: Use in-memory cache instead of file cache
       const newMessages = this.getNewMessagesFromMemory(chat.id._serialized, currentMessages);
 
       console.log(`🔔 [EXECUTE] Using ${newMessages.length} new messages (from ${currentMessages.length} total) for context`);
 
-      // Get sender info
       const contact = await message.getContact();
       const phoneNumber = (message.author || message.from).split('@')[0];
       const displayName = contact.pushname || contact.verifiedName || contact.number || phoneNumber;
@@ -325,26 +473,22 @@ class BotManager {
     const cachedMessages = this.groupCaches.get(groupId) || [];
     
     if (cachedMessages.length === 0) {
-      // 🧠 MEMORY OPTIMIZATION: Limit cached messages
       const messagesToCache = currentMessages.slice(-this.maxCachedMessages);
       this.groupCaches.set(groupId, messagesToCache);
       return currentMessages;
     }
 
-    // Create a map of cached messages for quick lookup
     const cachedMessageMap = new Map();
     cachedMessages.forEach(msg => {
       const key = `${msg.timestamp}_${msg.user}_${msg.message.substring(0, 50)}`;
       cachedMessageMap.set(key, true);
     });
 
-    // Filter out messages that are already in cache
     const newMessages = currentMessages.filter(msg => {
       const key = `${msg.timestamp}_${msg.user}_${msg.message.substring(0, 50)}`;
       return !cachedMessageMap.has(key);
     });
 
-    // 🧠 MEMORY OPTIMIZATION: Update cache with limited messages
     const updatedCache = currentMessages.slice(-this.maxCachedMessages);
     this.groupCaches.set(groupId, updatedCache);
 
@@ -377,6 +521,13 @@ class BotManager {
     }
   }
 
+  // 🚀 FIX: Add getBotStatus method here (moved up in the class)
+  getBotStatus() {
+    if (this.client && this.client.info) return 'connected';
+    if (this.hasSession()) return 'session_exists';
+    return 'disconnected';
+  }
+
   // Save/Load active groups
   saveActiveGroupsToDisk() {
     try {
@@ -402,7 +553,7 @@ class BotManager {
     }
   }
 
-  // 🧠 MEMORY OPTIMIZATION: Memory-efficient bot initialization
+  // 🚀 PERFORMANCE: Optimized bot initialization
   async initializeBot() {
     if (this.isInitializing) {
       console.log('Bot is already initializing...');
@@ -412,7 +563,7 @@ class BotManager {
     this.isInitializing = true;
     
     try {
-      console.log('🚀 Initializing bot with memory-optimized settings...');
+      console.log('🚀 Initializing bot with performance optimizations...');
       
       this.client = new Client({
         authStrategy: new LocalAuth({ 
@@ -421,7 +572,6 @@ class BotManager {
         }),
         puppeteer: {
           headless: true,
-          // 🧠 MEMORY OPTIMIZATION: Aggressive memory-saving flags
           args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -430,17 +580,15 @@ class BotManager {
             '--no-first-run',
             '--no-zygote',
             '--disable-gpu',
-            '--single-process', // 🧠 Major memory reduction
+            '--single-process',
             '--no-zygote',
             '--renderer-process-limit=1',
             '--max-old-space-size=128',
             '--memory-pressure-off'
           ],
-          // 🧠 MEMORY OPTIMIZATION: Smaller viewport
           defaultViewport: { width: 800, height: 600 },
           ignoreHTTPSErrors: true,
         },
-        // 🧠 MEMORY OPTIMIZATION: WhatsApp Web.js optimizations
         takeoverOnConflict: false,
         takeoverTimeoutMs: 0,
         restartOnAuthFail: false,
@@ -508,6 +656,8 @@ class BotManager {
       this.isProcessing = false;
       
       // 🧠 MEMORY OPTIMIZATION: Clear everything on disconnect
+      this.groupsCache.data = [];
+      this.groupsCache.lastUpdated = 0;
       this.processingQueue = [];
       this.currentProcessingRequest = null;
       this.groupCaches.clear();
@@ -542,180 +692,15 @@ class BotManager {
     console.log('✅ Bot stopped and memory cleaned up');
   }
 
-  // 🧠 MEMORY OPTIMIZATION: Safe groups fetching with error handling
-  async getGroups(forceRefresh = false) {
-    // Return cached data if still valid and not forcing refresh
-    const now = Date.now();
-    if (!forceRefresh && 
-        this.groupsCache.data.length > 0 && 
-        (now - this.groupsCache.lastUpdated) < this.groupsCache.cacheDuration) {
-      console.log('📁 Returning cached groups');
-      return this.groupsCache.data;
-    }
-
-    // If already updating, return current cache
-    if (this.groupsCache.isUpdating) {
-      console.log('🔄 Groups update in progress, returning cached data');
-      return this.groupsCache.data;
-    }
-
-    this.groupsCache.isUpdating = true;
-    
-    try {
-      if (!this.client || !this.client.info) {
-        console.log('⚠️ Bot client not ready — returning cached groups or empty array');
-        return this.groupsCache.data.length > 0 ? this.groupsCache.data : [];
-      }
-
-      console.time('🕒 GroupFetchTime');
-      const chats = await this.client.getChats();
-      console.timeEnd('🕒 GroupFetchTime');
-
-      if (!Array.isArray(chats)) {
-        console.warn('⚠️ getChats() did not return an array');
-        return this.groupsCache.data;
-      }
-
-      const groupChats = chats.filter(chat => {
-        try {
-          return !!chat && !!chat.isGroup;
-        } catch (e) {
-          return false;
-        }
-      });
-
-      console.log(`🔍 Processing ${groupChats.length} groups...`);
-
-      // Process in smaller batches
-      const batchSize = 10;
-      const groupData = [];
-
-      for (let i = 0; i < groupChats.length; i += batchSize) {
-        const batch = groupChats.slice(i, i + batchSize);
-        console.log(`🔄 Processing batch ${i/batchSize + 1}/${Math.ceil(groupChats.length/batchSize)}`);
-        
-        const batchPromises = batch.map(async (group) => {
-          try {
-            const id = group?.id?._serialized;
-            const name = group?.name || group?.subject || 'Unknown Group';
-            const participants = Array.isArray(group.participants) ? group.participants.length : 0;
-
-            return { id, name, participants };
-          } catch (err) {
-            console.warn('⚠️ Error processing group:', err.message);
-            return null;
-          }
-        });
-
-        const batchResults = await Promise.allSettled(batchPromises);
-        const validResults = batchResults
-          .filter(result => result.status === 'fulfilled' && result.value !== null)
-          .map(result => result.value);
-
-        groupData.push(...validResults);
-        
-        if (i + batchSize < groupChats.length) {
-          await new Promise(resolve => setTimeout(resolve, 50));
-        }
-      }
-
-      const validGroups = groupData.filter(g => g && g.id);
-      
-      this.groupsCache.data = validGroups;
-      this.groupsCache.lastUpdated = now;
-      this.groupsCache.isUpdating = false;
-
-      console.log(`✅ Loaded ${validGroups.length} groups (cached)`);
-      return validGroups;
-
-    } catch (error) {
-      console.error('❌ Error fetching groups:', error);
-      this.groupsCache.isUpdating = false;
-      return this.groupsCache.data.length > 0 ? this.groupsCache.data : [];
-    }
-  }
-
-  async getGroupsPreview() {
-    try {
-      if (!this.client || !this.client.info) {
-        return [];
-      }
-
-      const chats = await this.client.getChats();
-      const groupChats = chats.filter(chat => chat?.isGroup);
-
-      const previewData = groupChats.slice(0, 50).map(group => ({
-        id: group?.id?._serialized,
-        name: group?.name || group?.subject || 'Unknown Group',
-        participants: '...' // Placeholder
-      }));
-
-      return previewData;
-    } catch (error) {
-      console.error('Error fetching groups preview:', error);
-      return [];
-    }
-  }
-
-  async getGroupDetails(groupIds) {
-    try {
-      if (!this.client || !this.client.info) {
-        return [];
-      }
-
-      const chats = await this.client.getChats();
-      const detailedGroups = [];
-
-      for (const groupId of groupIds) {
-        const group = chats.find(chat => 
-          chat?.isGroup && chat?.id?._serialized === groupId
-        );
-
-        if (group) {
-          try {
-            const metadata = await group.groupMetadata?.catch(() => null);
-            const participants = metadata?.participants?.length || group.participants?.length || 0;
-            
-            detailedGroups.push({
-              id: groupId,
-              name: group.name || group.subject || 'Unknown Group',
-              participants,
-              description: metadata?.description || '',
-              createdAt: metadata?.creation || 0
-            });
-          } catch (err) {
-            detailedGroups.push({
-              id: groupId,
-              name: group.name || group.subject || 'Unknown Group',
-              participants: group.participants?.length || 0,
-              description: '',
-              createdAt: 0
-            });
-          }
-        }
-      }
-
-      return detailedGroups;
-    } catch (error) {
-      console.error('Error fetching group details:', error);
-      return [];
-    }
-  }
-
-  async refreshGroups() {
-    console.log('🔄 Manually refreshing groups cache...');
-    return await this.getGroups(true);
-  }
-
-  clearGroupsCache() {
-    this.groupsCache.data = [];
-    this.groupsCache.lastUpdated = 0;
-    console.log('🗑️ Groups cache cleared');
+  setActiveGroups(groups) {
+    this.activeGroups = groups;
+    this.saveActiveGroupsToDisk();
+    this.emitToAllSockets('active-groups-updated', { groups: groups });
+    console.log('✅ Set active groups:', groups);
   }
 
   // 🧠 MEMORY OPTIMIZATION: Efficient message handling
   async handleMessage(message) {
-    // Quick early returns to save processing
     if (this.activeGroups.length === 0) return;
     
     const chat = await message.getChat();
@@ -723,7 +708,6 @@ class BotManager {
     
     if (!this.activeGroups.includes(chat.id._serialized)) return;
 
-    // Check if message is too old (2 minutes)
     const messageTimestamp = message.timestamp;
     const twoMinutesAgo = Date.now() / 1000 - 120;
     if (messageTimestamp < twoMinutesAgo) return;
@@ -767,7 +751,7 @@ class BotManager {
           }
         },
         {
-          timeout: 2 * 60 * 1000, // 🧠 Reduced timeout to 2 minutes
+          timeout: 2 * 60 * 1000,
           headers: { 'Content-Type': 'application/json' },
         }
       );
@@ -808,7 +792,7 @@ class BotManager {
           }
         },
         {
-          timeout: 3 * 60 * 1000, // 🧠 3 minutes for search
+          timeout: 3 * 60 * 1000,
           headers: { 'Content-Type': 'application/json' },
         }
       );
@@ -843,7 +827,14 @@ class BotManager {
     }
   }
 
-  // Socket management (unchanged but included for completeness)
+  // 🚀 PERFORMANCE: Add method to clear groups cache
+  clearGroupsCache() {
+    this.groupsCache.data = [];
+    this.groupsCache.lastUpdated = 0;
+    console.log('🗑️ Groups cache cleared');
+  }
+
+  // Socket management
   addSocketConnection(socket) {
     this.socketConnections.push(socket);
     console.log('🔌 Socket connection added. Total connections:', this.socketConnections.length);

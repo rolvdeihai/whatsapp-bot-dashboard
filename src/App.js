@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 import './App.css';
 
@@ -22,10 +22,19 @@ function App() {
   });
   const [isLoading, setIsLoading] = useState(false);
   const [groupsLoading, setGroupsLoading] = useState(false);
-  const [visibleGroups, setVisibleGroups] = useState(20); // 🚀 LAZY LOADING: Show only 20 initially
+  const [visibleGroups, setVisibleGroups] = useState(20);
 
-  // 🚀 PERFORMANCE: Memoized fetch functions
-  const fetchGroupsPreview = useCallback(async () => {
+  // 🚀 FIX: Use refs to track state without causing re-renders
+  const selectedGroupsRef = useRef(selectedGroups);
+  const groupsLoadedRef = useRef(false);
+
+  // Update ref when selectedGroups changes
+  useEffect(() => {
+    selectedGroupsRef.current = selectedGroups;
+  }, [selectedGroups]);
+
+  // 🚀 FIX: Stable fetch function that doesn't change
+  const fetchGroupsPreview = async () => {
     if (groupsLoading) return;
     
     setGroupsLoading(true);
@@ -45,9 +54,11 @@ function App() {
       console.log(`✅ Loaded ${previewData.length} groups preview`);
       
       // 🚀 PERFORMANCE: Load details for selected groups only
-      if (selectedGroups.length > 0) {
-        loadSelectedGroupsDetails(selectedGroups);
+      if (selectedGroupsRef.current.length > 0) {
+        loadSelectedGroupsDetails(selectedGroupsRef.current);
       }
+
+      groupsLoadedRef.current = true;
     } catch (error) {
       console.error('Error fetching groups preview:', error);
       // Fallback to regular endpoint
@@ -55,7 +66,7 @@ function App() {
     } finally {
       setGroupsLoading(false);
     }
-  }, [groupsLoading, selectedGroups]);
+  };
 
   const loadSelectedGroupsDetails = async (groupIds) => {
     try {
@@ -82,7 +93,7 @@ function App() {
     }
   };
 
-  const fetchGroups = useCallback(async () => {
+  const fetchGroups = async () => {
     setGroupsLoading(true);
     try {
       console.log('🔄 Fetching full groups list...');
@@ -98,20 +109,19 @@ function App() {
       const groupsData = await response.json();
       setGroups(groupsData);
       console.log(`✅ Loaded ${groupsData.length} groups`);
+      groupsLoadedRef.current = true;
     } catch (error) {
       console.error('Error fetching groups:', error);
     } finally {
       setGroupsLoading(false);
     }
-  }, []);
-
-  // 🚀 LAZY LOADING: Load more groups when scrolling
-  const loadMoreGroups = () => {
-    setVisibleGroups(prev => prev + 20);
   };
 
+  // 🚀 FIX: Socket connection - runs only once
   useEffect(() => {
-    const newSocket = io(backendUrl);
+    const newSocket = io(backendUrl, {
+      transports: ['websocket', 'polling'] // 🚀 FIX: Specify transports
+    });
     setSocket(newSocket);
 
     newSocket.on('qr-code', (data) => {
@@ -124,11 +134,6 @@ function App() {
       console.log('Bot status:', data.status);
       setBotStatus(data.status);
       setIsLoading(false);
-      
-      // 🚀 PERFORMANCE: Load groups preview when connected (fast)
-      if (data.status === 'connected') {
-        fetchGroupsPreview();
-      }
       
       if (data.qrCode) {
         setQrCode(data.qrCode);
@@ -147,37 +152,79 @@ function App() {
       setIsLoading(false);
     });
 
-    checkSessionStatus();
+    newSocket.on('connect', () => {
+      console.log('✅ Socket connected');
+    });
 
-    return () => newSocket.close();
-  }, [fetchGroupsPreview]);
+    newSocket.on('disconnect', () => {
+      console.log('🔌 Socket disconnected');
+    });
 
-  const checkSessionStatus = async () => {
-    try {
-      const response = await fetch(`${backendUrl}/api/bot-status`);
-      const data = await response.json();
-      console.log('Session status:', data.status);
-      setBotStatus(data.status);
-      if (data.status === 'connected') {
-        fetchGroupsPreview();
+    return () => {
+      newSocket.close();
+    };
+  }, []); // 🚀 FIX: Empty dependency array
+
+  // 🚀 FIX: Load groups based on status - with proper guards
+  useEffect(() => {
+    const loadGroupsIfNeeded = async () => {
+      // Don't load if already loading or already loaded
+      if (groupsLoading || groupsLoadedRef.current) {
+        return;
       }
-    } catch (error) {
-      console.log('Error checking session status:', error);
+
+      // Only load for these statuses
+      if (botStatus === 'connected' || botStatus === 'session_exists') {
+        console.log(`🔄 Loading groups for status: ${botStatus}`);
+        await fetchGroupsPreview();
+      }
+    };
+
+    loadGroupsIfNeeded();
+  }, [botStatus]); // 🚀 FIX: Only depend on botStatus
+
+  // 🚀 FIX: Initial session check - runs only once
+  useEffect(() => {
+    const checkSessionStatus = async () => {
+      try {
+        const response = await fetch(`${backendUrl}/api/bot-status`);
+        const data = await response.json();
+        console.log('Initial session status:', data.status);
+        setBotStatus(data.status);
+      } catch (error) {
+        console.log('Error checking session status:', error);
+      }
+    };
+
+    checkSessionStatus();
+  }, []);
+
+  // 🚀 FIX: Reset groups loaded flag when bot disconnects
+  useEffect(() => {
+    if (botStatus === 'disconnected') {
+      groupsLoadedRef.current = false;
+      setGroups([]); // Clear groups when disconnected
     }
-  };
+  }, [botStatus]);
 
   const startBot = () => {
     if (isLoading) return;
     console.log('Manually starting bot');
     setIsLoading(true);
-    socket.emit('start-bot');
+    if (socket) {
+      socket.emit('start-bot');
+    }
   };
 
   const stopBot = () => {
     console.log('Manually stopping bot');
-    socket.emit('stop-bot');
+    if (socket) {
+      socket.emit('stop-bot');
+    }
     setIsLoading(false);
     setQrCode('');
+    groupsLoadedRef.current = false;
+    setGroups([]);
   };
 
   const toggleGroup = async (groupId) => {
@@ -208,18 +255,17 @@ function App() {
   };
 
   const refreshGroups = async () => {
-    try {
-      const response = await fetch(`${backendUrl}/api/groups/refresh`, {
-        method: 'POST',
-      });
-      if (response.ok) {
-        const refreshedGroups = await response.json();
-        setGroups(refreshedGroups);
-        alert('Groups refreshed successfully!');
-      }
-    } catch (error) {
-      console.error('Error refreshing groups:', error);
-    }
+    groupsLoadedRef.current = false;
+    await fetchGroupsPreview();
+  };
+
+  const reloadGroups = async () => {
+    groupsLoadedRef.current = false;
+    await fetchGroupsPreview();
+  };
+
+  const loadMoreGroups = () => {
+    setVisibleGroups(prev => prev + 20);
   };
 
   // 🚀 LAZY LOADING: Infinite scroll implementation
@@ -253,13 +299,13 @@ function App() {
           <div className="button-group">
             <button 
               onClick={startBot} 
-              disabled={botStatus === 'connected' || botStatus === 'scan_qr' || isLoading}
+              disabled={botStatus === 'connected' || botStatus === 'scan_qr' || isLoading || botStatus === 'session_exists'}
               className="btn btn-primary"
             >
               {isLoading ? 'Loading...' : 
                botStatus === 'connected' ? 'Connected' : 
                botStatus === 'scan_qr' ? 'Scan QR Code' : 
-               botStatus === 'session_exists' ? 'Connect to Existing Session' : 'Start Bot Manually'}
+               botStatus === 'session_exists' ? 'Auto-Connecting...' : 'Start Bot Manually'}
             </button>
             
             {botStatus === 'connected' && (
@@ -277,13 +323,13 @@ function App() {
           )}
         </section>
 
-        {botStatus === 'connected' && (
+        {(botStatus === 'connected' || botStatus === 'session_exists') && (
           <section className="groups-section">
             <div className="groups-header">
               <h2>Select Active Groups</h2>
               <div className="groups-controls">
                 <button 
-                  onClick={fetchGroupsPreview}
+                  onClick={reloadGroups}
                   disabled={groupsLoading}
                   className="btn btn-secondary"
                 >
@@ -291,6 +337,7 @@ function App() {
                 </button>
                 <button 
                   onClick={refreshGroups}
+                  disabled={groupsLoading}
                   className="btn btn-outline"
                 >
                   Refresh Cache
@@ -318,6 +365,7 @@ function App() {
                           checked={selectedGroups.includes(group.id)}
                           onChange={() => toggleGroup(group.id)}
                           className="group-checkbox"
+                          disabled={botStatus === 'session_exists'}
                         />
                         <span className="group-name">{group.name}</span>
                         <span className="group-participants">
@@ -340,11 +388,17 @@ function App() {
             
             <button 
               onClick={saveActiveGroups} 
-              disabled={selectedGroups.length === 0 || groupsLoading}
+              disabled={selectedGroups.length === 0 || groupsLoading || botStatus === 'session_exists'}
               className="btn btn-success"
             >
-              Save Active Groups ({selectedGroups.length} selected)
+              {botStatus === 'session_exists' ? 'Wait for Connection...' : `Save Active Groups (${selectedGroups.length} selected)`}
             </button>
+
+            {botStatus === 'session_exists' && (
+              <div className="info-message">
+                <p>📱 <strong>Session detected!</strong> The bot is automatically reconnecting. Groups will be available once connected.</p>
+              </div>
+            )}
           </section>
         )}
       </div>
