@@ -532,6 +532,7 @@ class BotManager {
           clientId: 'admin',
           dataPath: this.authPath
         }),
+        // In your BotManager constructor, update the puppeteer section:
         puppeteer: {
           headless: true,
           args: [
@@ -543,13 +544,14 @@ class BotManager {
             '--no-zygote',
             '--disable-gpu',
             '--single-process',
-            '--no-zygote',
-            '--renderer-process-limit=1',
-            '--max-old-space-size=128',
-            '--memory-pressure-off'
+            '--disable-features=VizDisplayCompositor',
+            '--disable-software-rasterizer',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--max-old-space-size=512'
           ],
-          defaultViewport: { width: 800, height: 600 },
-          ignoreHTTPSErrors: true,
+          executablePath: process.env.CHROME_BIN || undefined,
         },
         takeoverOnConflict: false,
         takeoverTimeoutMs: 0,
