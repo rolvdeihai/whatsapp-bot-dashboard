@@ -11,64 +11,69 @@ function App() {
   const [groups, setGroups] = useState([]);
   const [selectedGroups, setSelectedGroups] = useState(() => {
     const savedGroups = localStorage.getItem('activeGroups');
-    if (savedGroups) {
-      try {
-        return JSON.parse(savedGroups);
-      } catch (error) {
-        console.error('Error parsing saved groups:', error);
-      }
-    }
-    return [];
+    return savedGroups ? JSON.parse(savedGroups) : [];
   });
   const [isLoading, setIsLoading] = useState(false);
   const [groupsLoading, setGroupsLoading] = useState(false);
   const [visibleGroups, setVisibleGroups] = useState(20);
 
-  // 🚀 FIX: Use refs to track state without causing re-renders
+  // Refs for stable values
   const selectedGroupsRef = useRef(selectedGroups);
   const groupsLoadedRef = useRef(false);
+  const loadAttemptRef = useRef(0);
 
   // Update ref when selectedGroups changes
   useEffect(() => {
     selectedGroupsRef.current = selectedGroups;
   }, [selectedGroups]);
 
-  // 🚀 FIX: Stable fetch function that doesn't change
-  const fetchGroupsPreview = async () => {
+  // 🚀 STABLE: Fetch groups with retry logic
+  const fetchGroups = async (usePreview = true) => {
     if (groupsLoading) return;
     
     setGroupsLoading(true);
+    loadAttemptRef.current += 1;
+    const currentAttempt = loadAttemptRef.current;
+
     try {
-      console.log('🚀 Fetching groups preview (fast load)...');
-      const response = await fetch(`${backendUrl}/api/groups/preview`);
+      console.log(`🔄 Attempt ${currentAttempt}: Loading groups...`);
+      
+      let endpoint = usePreview ? '/api/groups/preview' : '/api/groups';
+      const response = await fetch(`${backendUrl}${endpoint}`);
       
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       
-      const contentType = response.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
-        throw new TypeError('Server did not return JSON');
-      }
-      
-      const previewData = await response.json();
-      setGroups(previewData);
-      console.log(`✅ Loaded ${previewData.length} groups preview`);
-      
-      // 🚀 PERFORMANCE: Load details for selected groups only
-      if (selectedGroupsRef.current.length > 0) {
-        loadSelectedGroupsDetails(selectedGroupsRef.current);
-      }
+      const groupsData = await response.json();
+      console.log(`✅ Loaded ${groupsData.length} groups`);
 
-      groupsLoadedRef.current = true;
+      // Only update if this is the most recent request
+      if (currentAttempt === loadAttemptRef.current) {
+        setGroups(groupsData);
+        groupsLoadedRef.current = true;
+
+        // Load details for selected groups
+        if (groupsData.length > 0 && selectedGroupsRef.current.length > 0) {
+          loadSelectedGroupsDetails(selectedGroupsRef.current);
+        }
+      }
     } catch (error) {
-      console.error('Error fetching groups preview:', error);
-      // Fallback to regular endpoint
-      await fetchGroups();
+      console.error('Error fetching groups:', error);
+      
+      // Retry with full endpoint if preview fails
+      if (usePreview && currentAttempt === loadAttemptRef.current) {
+        console.log('🔄 Preview failed, trying full endpoint...');
+        await fetchGroups(false);
+      }
     } finally {
-      setGroupsLoading(false);
+      if (currentAttempt === loadAttemptRef.current) {
+        setGroupsLoading(false);
+      }
     }
   };
 
   const loadSelectedGroupsDetails = async (groupIds) => {
+    if (groupIds.length === 0) return;
+    
     try {
       console.log(`🔍 Loading details for ${groupIds.length} selected groups...`);
       const response = await fetch(`${backendUrl}/api/groups/details`, {
@@ -80,7 +85,6 @@ function App() {
       if (response.ok) {
         const detailedGroups = await response.json();
         
-        // Update groups with detailed information
         setGroups(prevGroups => 
           prevGroups.map(group => {
             const detailed = detailedGroups.find(g => g.id === group.id);
@@ -93,103 +97,78 @@ function App() {
     }
   };
 
-  const fetchGroups = async () => {
-    setGroupsLoading(true);
-    try {
-      console.log('🔄 Fetching full groups list...');
-      const response = await fetch(`${backendUrl}/api/groups`);
-      
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      
-      const contentType = response.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
-        throw new TypeError('Server did not return JSON');
-      }
-      
-      const groupsData = await response.json();
-      setGroups(groupsData);
-      console.log(`✅ Loaded ${groupsData.length} groups`);
-      groupsLoadedRef.current = true;
-    } catch (error) {
-      console.error('Error fetching groups:', error);
-    } finally {
-      setGroupsLoading(false);
-    }
-  };
-
-  // 🚀 FIX: Socket connection - runs only once
+  // 🚀 STABLE: Socket connection - runs only once
   useEffect(() => {
+    console.log('🔌 Initializing socket connection...');
     const newSocket = io(backendUrl, {
-      transports: ['websocket', 'polling'] // 🚀 FIX: Specify transports
+      transports: ['websocket', 'polling'],
+      timeout: 10000,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000
     });
+
     setSocket(newSocket);
 
-    newSocket.on('qr-code', (data) => {
-      console.log('QR code received:', data.qr ? 'Base64 data received' : 'No data');
+    const handleQrCode = (data) => {
+      console.log('📱 QR code received');
       setQrCode(data.qr);
       setIsLoading(false);
-    });
+    };
 
-    newSocket.on('bot-status', (data) => {
-      console.log('Bot status:', data.status);
+    const handleBotStatus = (data) => {
+      console.log('🤖 Bot status:', data.status);
       setBotStatus(data.status);
       setIsLoading(false);
       
       if (data.qrCode) {
         setQrCode(data.qrCode);
       }
-    });
+    };
 
-    newSocket.on('active-groups-updated', (data) => {
-      console.log('Active groups updated from server:', data.groups);
+    const handleActiveGroups = (data) => {
+      console.log('📋 Active groups updated:', data.groups.length);
       setSelectedGroups(data.groups);
       localStorage.setItem('activeGroups', JSON.stringify(data.groups));
-    });
+    };
 
-    newSocket.on('bot-error', (data) => {
-      console.error('Bot error:', data.error);
+    const handleBotError = (data) => {
+      console.error('❌ Bot error:', data.error);
       alert('Bot error: ' + data.error);
       setIsLoading(false);
-    });
+    };
 
-    newSocket.on('connect', () => {
-      console.log('✅ Socket connected');
-    });
-
-    newSocket.on('disconnect', () => {
-      console.log('🔌 Socket disconnected');
-    });
+    newSocket.on('qr-code', handleQrCode);
+    newSocket.on('bot-status', handleBotStatus);
+    newSocket.on('active-groups-updated', handleActiveGroups);
+    newSocket.on('bot-error', handleBotError);
+    newSocket.on('connect', () => console.log('✅ Socket connected'));
+    newSocket.on('disconnect', () => console.log('🔌 Socket disconnected'));
 
     return () => {
+      console.log('🧹 Cleaning up socket...');
+      newSocket.off('qr-code', handleQrCode);
+      newSocket.off('bot-status', handleBotStatus);
+      newSocket.off('active-groups-updated', handleActiveGroups);
+      newSocket.off('bot-error', handleBotError);
       newSocket.close();
     };
-  }, []); // 🚀 FIX: Empty dependency array
+  }, []);
 
-  // 🚀 FIX: Load groups based on status - with proper guards
+  // 🚀 STABLE: Load groups when bot becomes ready
   useEffect(() => {
-    const loadGroupsIfNeeded = async () => {
-      // Don't load if already loading or already loaded
-      if (groupsLoading || groupsLoadedRef.current) {
-        return;
-      }
+    if ((botStatus === 'connected' || botStatus === 'session_exists') && !groupsLoadedRef.current) {
+      console.log(`🚀 Bot is ${botStatus}, loading groups...`);
+      fetchGroups(true);
+    }
+  }, [botStatus]);
 
-      // Only load for these statuses
-      if (botStatus === 'connected' || botStatus === 'session_exists') {
-        console.log(`🔄 Loading groups for status: ${botStatus}`);
-        await fetchGroupsPreview();
-      }
-    };
-
-    loadGroupsIfNeeded();
-  }, [botStatus]); // 🚀 FIX: Only depend on botStatus
-
-  // 🚀 FIX: Initial session check - runs only once
+  // 🚀 STABLE: Initial session check
   useEffect(() => {
     const checkSessionStatus = async () => {
       try {
         const response = await fetch(`${backendUrl}/api/bot-status`);
         const data = await response.json();
-        console.log('Initial session status:', data.status);
+        console.log('🔍 Initial session status:', data.status);
         setBotStatus(data.status);
       } catch (error) {
         console.log('Error checking session status:', error);
@@ -199,35 +178,33 @@ function App() {
     checkSessionStatus();
   }, []);
 
-  // 🚀 FIX: Reset groups loaded flag when bot disconnects
+  // Reset when bot disconnects
   useEffect(() => {
     if (botStatus === 'disconnected') {
       groupsLoadedRef.current = false;
-      setGroups([]); // Clear groups when disconnected
+      loadAttemptRef.current = 0;
     }
   }, [botStatus]);
 
   const startBot = () => {
-    if (isLoading) return;
-    console.log('Manually starting bot');
+    if (isLoading || !socket) return;
+    console.log('🎯 Manually starting bot');
     setIsLoading(true);
-    if (socket) {
-      socket.emit('start-bot');
-    }
+    socket.emit('start-bot');
   };
 
   const stopBot = () => {
-    console.log('Manually stopping bot');
-    if (socket) {
-      socket.emit('stop-bot');
-    }
+    if (!socket) return;
+    console.log('🛑 Manually stopping bot');
+    socket.emit('stop-bot');
     setIsLoading(false);
     setQrCode('');
     groupsLoadedRef.current = false;
+    loadAttemptRef.current = 0;
     setGroups([]);
   };
 
-  const toggleGroup = async (groupId) => {
+  const toggleGroup = (groupId) => {
     const newSelectedGroups = selectedGroups.includes(groupId)
       ? selectedGroups.filter(id => id !== groupId)
       : [...selectedGroups, groupId];
@@ -235,9 +212,9 @@ function App() {
     setSelectedGroups(newSelectedGroups);
     localStorage.setItem('activeGroups', JSON.stringify(newSelectedGroups));
 
-    // 🚀 PERFORMANCE: Load details for newly selected group
+    // Load details for newly selected group
     if (!selectedGroups.includes(groupId)) {
-      await loadSelectedGroupsDetails([groupId]);
+      loadSelectedGroupsDetails([groupId]);
     }
   };
 
@@ -248,40 +225,27 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ groups: selectedGroups }),
       });
-      alert('Active groups updated successfully!');
+      alert('✅ Active groups updated successfully!');
     } catch (error) {
       console.error('Error saving groups:', error);
+      alert('❌ Failed to save groups');
     }
   };
 
-  const refreshGroups = async () => {
+  const reloadGroups = () => {
     groupsLoadedRef.current = false;
-    await fetchGroupsPreview();
-  };
-
-  const reloadGroups = async () => {
-    groupsLoadedRef.current = false;
-    await fetchGroupsPreview();
+    loadAttemptRef.current = 0;
+    fetchGroups(true);
   };
 
   const loadMoreGroups = () => {
     setVisibleGroups(prev => prev + 20);
   };
 
-  // 🚀 LAZY LOADING: Infinite scroll implementation
+  // Reset visible groups when groups change
   useEffect(() => {
-    const handleScroll = () => {
-      if (window.innerHeight + document.documentElement.scrollTop 
-          !== document.documentElement.offsetHeight) return;
-      
-      if (visibleGroups < groups.length) {
-        loadMoreGroups();
-      }
-    };
-
-    window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, [visibleGroups, groups.length]);
+    setVisibleGroups(20);
+  }, [groups]);
 
   return (
     <div className="App">
@@ -289,6 +253,7 @@ function App() {
         <h1>WhatsApp Bot Dashboard</h1>
         <div className={`status ${botStatus}`}>
           Status: {botStatus === 'session_exists' ? 'Session Found (Auto-connecting...)' : botStatus}
+          {groupsLoading && ' • Loading groups...'}
         </div>
       </header>
 
@@ -299,17 +264,17 @@ function App() {
           <div className="button-group">
             <button 
               onClick={startBot} 
-              disabled={botStatus === 'connected' || botStatus === 'scan_qr' || isLoading || botStatus === 'session_exists'}
+              disabled={['connected', 'scan_qr', 'session_exists'].includes(botStatus) || isLoading}
               className="btn btn-primary"
             >
               {isLoading ? 'Loading...' : 
                botStatus === 'connected' ? 'Connected' : 
                botStatus === 'scan_qr' ? 'Scan QR Code' : 
-               botStatus === 'session_exists' ? 'Auto-Connecting...' : 'Start Bot Manually'}
+               botStatus === 'session_exists' ? 'Auto-Connecting...' : 'Start Bot'}
             </button>
             
             {botStatus === 'connected' && (
-              <button onClick={stopBot} className="btn btn-danger" disabled={isLoading}>
+              <button onClick={stopBot} className="btn btn-danger">
                 Stop Bot
               </button>
             )}
@@ -318,7 +283,7 @@ function App() {
           {qrCode && botStatus === 'scan_qr' && (
             <div className="qr-code">
               <p>Scan this QR code with WhatsApp to connect:</p>
-              <img src={qrCode} alt="QR Code" style={{ width: '300px', height: '300px' }} />
+              <img src={qrCode} alt="QR Code" />
             </div>
           )}
         </section>
@@ -333,14 +298,7 @@ function App() {
                   disabled={groupsLoading}
                   className="btn btn-secondary"
                 >
-                  {groupsLoading ? 'Loading...' : 'Reload Groups'}
-                </button>
-                <button 
-                  onClick={refreshGroups}
-                  disabled={groupsLoading}
-                  className="btn btn-outline"
-                >
-                  Refresh Cache
+                  {groupsLoading ? 'Loading...' : `Reload Groups (${groups.length})`}
                 </button>
               </div>
             </div>
@@ -348,13 +306,18 @@ function App() {
             <p>Choose which groups the bot should respond in:</p>
             
             <div className="groups-list">
-              {groupsLoading ? (
+              {groupsLoading && groups.length === 0 ? (
                 <div className="loading-groups">
                   <p>Loading groups...</p>
                   <div className="loading-spinner"></div>
                 </div>
               ) : groups.length === 0 ? (
-                <p>No groups found or still loading...</p>
+                <div className="no-groups">
+                  <p>No groups found.</p>
+                  <button onClick={reloadGroups} className="btn btn-outline">
+                    Try Again
+                  </button>
+                </div>
               ) : (
                 <>
                   {groups.slice(0, visibleGroups).map(group => (
@@ -364,7 +327,6 @@ function App() {
                           type="checkbox"
                           checked={selectedGroups.includes(group.id)}
                           onChange={() => toggleGroup(group.id)}
-                          className="group-checkbox"
                           disabled={botStatus === 'session_exists'}
                         />
                         <span className="group-name">{group.name}</span>
@@ -376,7 +338,7 @@ function App() {
                   ))}
                   
                   {visibleGroups < groups.length && (
-                    <div className="load-more-container">
+                    <div className="load-more">
                       <button onClick={loadMoreGroups} className="btn btn-outline">
                         Load More ({groups.length - visibleGroups} remaining)
                       </button>
@@ -386,17 +348,19 @@ function App() {
               )}
             </div>
             
-            <button 
-              onClick={saveActiveGroups} 
-              disabled={selectedGroups.length === 0 || groupsLoading || botStatus === 'session_exists'}
-              className="btn btn-success"
-            >
-              {botStatus === 'session_exists' ? 'Wait for Connection...' : `Save Active Groups (${selectedGroups.length} selected)`}
-            </button>
+            {selectedGroups.length > 0 && (
+              <button 
+                onClick={saveActiveGroups} 
+                disabled={groupsLoading || botStatus === 'session_exists'}
+                className="btn btn-success"
+              >
+                {botStatus === 'session_exists' ? 'Wait for Connection...' : `Save ${selectedGroups.length} Active Groups`}
+              </button>
+            )}
 
             {botStatus === 'session_exists' && (
               <div className="info-message">
-                <p>📱 <strong>Session detected!</strong> The bot is automatically reconnecting. Groups will be available once connected.</p>
+                <p>📱 <strong>Session detected!</strong> The bot is automatically reconnecting.</p>
               </div>
             )}
           </section>

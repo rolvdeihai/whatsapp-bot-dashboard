@@ -110,9 +110,36 @@ class BotManager {
     }
   }
 
-  // 🚀 PERFORMANCE: Optimized groups fetching with lazy loading
+  // Add this method to your BotManager class for better group fetching
+  async getGroupsWithRetry(forceRefresh = false, retryCount = 0) {
+    const maxRetries = 3;
+    
+    try {
+      const groups = await this.getGroups(forceRefresh);
+      
+      // If no groups but we have an active client, try to force refresh
+      if (groups.length === 0 && this.client && this.client.info && retryCount < maxRetries) {
+        console.log(`🔄 No groups found, retrying... (${retryCount + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return this.getGroupsWithRetry(true, retryCount + 1);
+      }
+      
+      return groups;
+    } catch (error) {
+      if (retryCount < maxRetries) {
+        console.log(`🔄 Error fetching groups, retrying... (${retryCount + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return this.getGroupsWithRetry(forceRefresh, retryCount + 1);
+      }
+      throw error;
+    }
+  }
+
+  // Update the getGroups method to be more robust
   async getGroups(forceRefresh = false) {
     const now = Date.now();
+    
+    // Return cached data if still valid and not forcing refresh
     if (!forceRefresh && 
         this.groupsCache.data.length > 0 && 
         (now - this.groupsCache.lastUpdated) < this.groupsCache.cacheDuration) {
@@ -120,16 +147,18 @@ class BotManager {
       return this.groupsCache.data;
     }
 
+    // If already updating, wait a bit and return current cache
     if (this.groupsCache.isUpdating) {
-      console.log('🔄 Groups update in progress, returning cached data');
-      return this.groupsCache.data;
+      console.log('🔄 Groups update in progress, waiting...');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return this.groupsCache.data.length > 0 ? this.groupsCache.data : [];
     }
 
     this.groupsCache.isUpdating = true;
     
     try {
       if (!this.client || !this.client.info) {
-        console.log('⚠️ Bot client not ready — returning cached groups or empty array');
+        console.log('⚠️ Bot client not ready');
         return this.groupsCache.data.length > 0 ? this.groupsCache.data : [];
       }
 
@@ -150,37 +179,28 @@ class BotManager {
         }
       });
 
-      console.log(`🔍 Processing ${groupChats.length} groups...`);
+      console.log(`🔍 Found ${groupChats.length} group chats, processing...`);
 
-      const batchSize = 10;
+      // 🚀 PERFORMANCE: Use simpler processing for deployment
       const groupData = [];
+      
+      for (let i = 0; i < groupChats.length; i++) {
+        const group = groupChats[i];
+        try {
+          const id = group?.id?._serialized;
+          if (!id) continue;
+          
+          const name = group?.name || group?.subject || 'Unknown Group';
+          const participants = Array.isArray(group.participants) ? group.participants.length : 0;
 
-      for (let i = 0; i < groupChats.length; i += batchSize) {
-        const batch = groupChats.slice(i, i + batchSize);
-        console.log(`🔄 Processing batch ${i/batchSize + 1}/${Math.ceil(groupChats.length/batchSize)}`);
-        
-        const batchPromises = batch.map(async (group) => {
-          try {
-            const id = group?.id?._serialized;
-            const name = group?.name || group?.subject || 'Unknown Group';
-            const participants = Array.isArray(group.participants) ? group.participants.length : 0;
-
-            return { id, name, participants };
-          } catch (err) {
-            console.warn('⚠️ Error processing group:', err.message);
-            return null;
+          groupData.push({ id, name, participants });
+          
+          // Process in chunks to prevent blocking
+          if (i % 10 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 10));
           }
-        });
-
-        const batchResults = await Promise.allSettled(batchPromises);
-        const validResults = batchResults
-          .filter(result => result.status === 'fulfilled' && result.value !== null)
-          .map(result => result.value);
-
-        groupData.push(...validResults);
-        
-        if (i + batchSize < groupChats.length) {
-          await new Promise(resolve => setTimeout(resolve, 50));
+        } catch (err) {
+          console.warn('⚠️ Error processing group:', err.message);
         }
       }
 
@@ -188,15 +208,50 @@ class BotManager {
       
       this.groupsCache.data = validGroups;
       this.groupsCache.lastUpdated = now;
-      this.groupsCache.isUpdating = false;
-
-      console.log(`✅ Loaded ${validGroups.length} groups (cached)`);
+      
+      console.log(`✅ Successfully loaded ${validGroups.length} groups`);
       return validGroups;
 
     } catch (error) {
       console.error('❌ Error fetching groups:', error);
-      this.groupsCache.isUpdating = false;
       return this.groupsCache.data.length > 0 ? this.groupsCache.data : [];
+    } finally {
+      this.groupsCache.isUpdating = false;
+    }
+  }
+
+  // Update the getGroupsPreview method
+  async getGroupsPreview() {
+    try {
+      if (!this.client || !this.client.info) {
+        console.log('⚠️ Bot client not ready for preview');
+        return [];
+      }
+
+      // Use the cached data if available for faster response
+      if (this.groupsCache.data.length > 0) {
+        console.log('📁 Using cached groups for preview');
+        return this.groupsCache.data.slice(0, 50).map(group => ({
+          ...group,
+          participants: group.participants || '...'
+        }));
+      }
+
+      // If no cache, try quick fetch
+      const chats = await this.client.getChats();
+      const groupChats = chats.filter(chat => chat?.isGroup);
+
+      const previewData = groupChats.slice(0, 30).map(group => ({
+        id: group?.id?._serialized,
+        name: group?.name || group?.subject || 'Unknown Group',
+        participants: '...' // Placeholder for fast loading
+      }));
+
+      console.log(`✅ Generated preview for ${previewData.length} groups`);
+      return previewData;
+    } catch (error) {
+      console.error('Error fetching groups preview:', error);
+      return [];
     }
   }
 
