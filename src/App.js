@@ -1,10 +1,20 @@
 // whatsapp-bot-dashboard/src/App.js
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import io from 'socket.io-client';
 import './App.css';
 
 const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000';
+
+// 🧠 Common headers to bypass ngrok warning
+const commonHeaders = {
+  'ngrok-skip-browser-warning': '1',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36',
+  'Accept': 'application/json, text/javascript, */*; q=0.01',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Referer': backendUrl,
+  'Content-Type': 'application/json'
+};
 
 function App() {
   const [socket, setSocket] = useState(null);
@@ -20,33 +30,43 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [searching, setSearching] = useState(false);
 
-  // 🚀 SIMPLIFIED: Load only saved groups
+  // 🧠 Helper: safely parse JSON or detect ngrok splash
+  const parseJsonSafely = async (response) => {
+    const text = await response.text();
+    if (text.startsWith('<!DOCTYPE html') || text.includes('ERR_NGROK_6024')) {
+      throw new Error('Blocked by ngrok splash page (ERR_NGROK_6024)');
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error('Invalid JSON response');
+    }
+  };
+
+  // 🚀 Load saved groups
   const loadSavedGroups = async () => {
     if (selectedGroups.length === 0) {
       setSavedGroups([]);
       return;
     }
-
     try {
       const response = await fetch(`${backendUrl}/api/groups/saved`, {
         method: 'POST',
-        headers: {
-          'ngrok-skip-browser-warning': '1',
-          'Content-Type': 'application/json'
-        },
+        headers: commonHeaders,
         body: JSON.stringify({ groupIds: selectedGroups }),
       });
-
       if (response.ok) {
-        const groups = await response.json();
+        const groups = await parseJsonSafely(response);
         setSavedGroups(groups);
+      } else {
+        console.error('Failed to load saved groups:', response.status);
       }
     } catch (error) {
       console.error('Error loading saved groups:', error);
     }
   };
 
-  // 🚀 SIMPLIFIED: Search groups
+  // 🚀 Search groups
   const searchGroups = async () => {
     if (!searchQuery || searchQuery.length < 2) {
       setSearchResults([]);
@@ -55,19 +75,24 @@ function App() {
 
     setSearching(true);
     try {
-      const response = await fetch(`${backendUrl}/api/groups/search?q=${encodeURIComponent(searchQuery)}`);
+      const response = await fetch(`${backendUrl}/api/groups/search?q=${encodeURIComponent(searchQuery)}`, {
+        headers: commonHeaders,
+      });
       if (response.ok) {
-        const results = await response.json();
+        const results = await parseJsonSafely(response);
         setSearchResults(results);
+      } else {
+        console.error('Failed to search groups:', response.status);
       }
     } catch (error) {
       console.error('Error searching groups:', error);
+      alert('❌ Search failed: ' + error.message);
     } finally {
       setSearching(false);
     }
   };
 
-  // 🚀 SIMPLIFIED: Socket connection
+  // 🚀 Socket connection
   useEffect(() => {
     const newSocket = io(backendUrl, {
       transports: ['websocket', 'polling'],
@@ -100,28 +125,30 @@ function App() {
     return () => newSocket.close();
   }, []);
 
-  // 🚀 SIMPLIFIED: Load saved groups when selection changes
+  // 🚀 Load saved groups when selection changes
   useEffect(() => {
     if (botStatus === 'connected' || botStatus === 'session_exists') {
       loadSavedGroups();
     }
   }, [selectedGroups, botStatus]);
 
-  // 🚀 SIMPLIFIED: Initial session check
+  // 🚀 Initial session check
   useEffect(() => {
     const checkSessionStatus = async () => {
       try {
-        const response = await fetch(`${backendUrl}/api/bot-status`);
-        const data = await response.json();
+        const response = await fetch(`${backendUrl}/api/bot-status`, {
+          headers: commonHeaders,
+        });
+        const data = await parseJsonSafely(response);
         setBotStatus(data.status);
       } catch (error) {
         console.log('Error checking session status:', error);
       }
     };
-
     checkSessionStatus();
   }, []);
 
+  // 🚀 Bot controls
   const startBot = () => {
     if (isLoading || !socket) return;
     setIsLoading(true);
@@ -135,6 +162,7 @@ function App() {
     setQrCode('');
   };
 
+  // 🚀 Manage group selections
   const toggleGroup = (groupId) => {
     const newSelectedGroups = selectedGroups.includes(groupId)
       ? selectedGroups.filter(id => id !== groupId)
@@ -148,20 +176,11 @@ function App() {
     try {
       const response = await fetch(`${backendUrl}/api/active-groups`, {
         method: 'POST',
-        headers: {
-          'ngrok-skip-browser-warning': '1',
-          'Content-Type': 'application/json'
-        },
+        headers: commonHeaders,
         body: JSON.stringify({ groups: selectedGroups }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-      }
-
-      const result = await response.json();
-      
+      const result = await parseJsonSafely(response);
       if (result.success) {
         alert('✅ Active groups saved!');
       } else {
@@ -178,6 +197,7 @@ function App() {
     searchGroups();
   };
 
+  // 🚀 UI Rendering
   return (
     <div className="App">
       <header className="App-header">
@@ -221,7 +241,7 @@ function App() {
           <section className="groups-section">
             <h2>Manage Active Groups</h2>
             
-            {/* 🚀 SIMPLIFIED: Search to add groups */}
+            {/* 🚀 Search section */}
             <div className="search-section">
               <h3>Add New Groups</h3>
               <form onSubmit={handleSearch} className="search-form">
@@ -257,7 +277,7 @@ function App() {
               )}
             </div>
 
-            {/* 🚀 SIMPLIFIED: Show only saved groups */}
+            {/* 🚀 Saved groups */}
             <div className="saved-groups">
               <h3>Active Groups ({selectedGroups.length})</h3>
               
