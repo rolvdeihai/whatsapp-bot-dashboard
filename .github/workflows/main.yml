@@ -1,0 +1,104 @@
+name: Deploy and Run WhatsApp Bot
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'backend/**'
+  workflow_dispatch:  # Allows manual triggering
+
+env:
+  FRONTEND_URL: https://baby-ai.vercel.app/
+  NODE_ENV: production
+  PORT: 5000
+  API_ENDPOINT: https://fatmagician-baby-ai.hf.space
+
+jobs:
+  deploy-and-run:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Create production environment file
+      run: |
+        echo "PORT=5000" > .env
+        echo "NODE_ENV=production" >> .env
+        echo "API_ENDPOINT=https://fatmagician-baby-ai.hf.space" >> .env
+        echo "BROWSERLESS_API_KEY=${{ secrets.BROWSERLESS_API_KEY }}" >> .env
+
+    - name: Install Puppeteer dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          ca-certificates \
+          fonts-liberation \
+          libasound2 \
+          libatk-bridge2.0-0 \
+          libatk1.0-0 \
+          libc6 \
+          libcairo2 \
+          libcups2 \
+          libdbus-1-3 \
+          libexpat1 \
+          libfontconfig1 \
+          libgbm1 \
+          libgcc1 \
+          libglib2.0-0 \
+          libgtk-3-0 \
+          libnspr4 \
+          libnss3 \
+          libpango-1.0-0 \
+          libpangocairo-1.0-0 \
+          libstdc++6 \
+          libx11-6 \
+          libx11-xcb1 \
+          libxcb1 \
+          libxcomposite1 \
+          libxcursor1 \
+          libxdamage1 \
+          libxext6 \
+          libxfixes3 \
+          libxi6 \
+          libxrandr2 \
+          libxrender1 \
+          libxss1 \
+          libxtst6 \
+          lsb-release \
+          wget \
+          xdg-utils
+
+    - name: Start WhatsApp Bot
+      run: |
+        npm start &
+        BOT_PID=$!
+        echo "BOT_PID=$BOT_PID" >> $GITHUB_ENV
+        
+        # Wait for bot to initialize
+        sleep 30
+        
+        # Keep the workflow running
+        wait $BOT_PID
+      env:
+        BROWSERLESS_API_KEY: ${{ secrets.BROWSERLESS_API_KEY }}
+
+    - name: Upload session data (if needed for persistence)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: whatsapp-auth-session
+        path: auth/
+        retention-days: 1
