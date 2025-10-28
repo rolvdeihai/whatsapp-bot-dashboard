@@ -1,4 +1,4 @@
-// backend/src/botManager.js
+// whatsapp-bot-dashboard/backend/src/botManager.js
 
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
@@ -542,16 +542,16 @@ class BotManager {
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--disable-gpu',
             '--single-process',
-            '--disable-features=VizDisplayCompositor',
-            '--disable-software-rasterizer',
+            '--disable-gpu',
+            '--disable-extensions',
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding',
             '--max-old-space-size=512'
           ],
-          executablePath: process.env.CHROME_BIN || undefined,
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined, // Use system Chromium
+          ignoreDefaultArgs: ['--disable-extensions'],
         },
         takeoverOnConflict: false,
         takeoverTimeoutMs: 0,

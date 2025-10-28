@@ -1,4 +1,4 @@
-// backend/src/index.js
+// whatsapp-bot-dashboard/backend/src/index.js
 
 import express from 'express';
 import cors from 'cors';

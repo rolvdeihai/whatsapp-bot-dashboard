@@ -5,7 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'backend/**'
-  workflow_dispatch:  # Allows manual triggering
+  workflow_dispatch:
 
 env:
   FRONTEND_URL: https://baby-ai.vercel.app/
@@ -30,20 +30,11 @@ jobs:
         node-version: '20.x'
         cache: 'npm'
 
-    - name: Install dependencies
-      run: npm ci
-
-    - name: Create production environment file
-      run: |
-        echo "PORT=5000" > .env
-        echo "NODE_ENV=production" >> .env
-        echo "API_ENDPOINT=https://fatmagician-baby-ai.hf.space" >> .env
-        echo "BROWSERLESS_API_KEY=${{ secrets.BROWSERLESS_API_KEY }}" >> .env
-
-    - name: Install Puppeteer dependencies (Ubuntu 24.04 compatible)
+    - name: Install Chromium and dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
+          chromium-browser \
           ca-certificates \
           fonts-liberation \
           libasound2t64 \
@@ -58,7 +49,6 @@ jobs:
           libgbm1 \
           libgcc1 \
           libglib2.0-0 \
-          libgtk-3-0 \
           libnspr4 \
           libnss3 \
           libpango-1.0-0 \
@@ -77,13 +67,24 @@ jobs:
           libxrender1 \
           libxss1 \
           libxtst6 \
-          lsb-release \
           wget \
           xdg-utils
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Create production environment file
+      run: |
+        echo "PORT=5000" > .env
+        echo "NODE_ENV=production" >> .env
+        echo "API_ENDPOINT=https://fatmagician-baby-ai.hf.space" >> .env
+        # No BROWSERLESS_API_KEY needed
 
     - name: Start WhatsApp Bot
       run: |
         export NODE_OPTIONS="--max-old-space-size=512"
+        export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+        export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
         
         npm start &
         BOT_PID=$!
@@ -93,10 +94,8 @@ jobs:
         
         echo "🤖 Bot is now running. Waiting for completion or timeout..."
         wait $BOT_PID
-      env:
-        BROWSERLESS_API_KEY: ${{ secrets.BROWSERLESS_API_KEY }}
 
-    - name: Upload session data (if needed for persistence)
+    - name: Upload session data
       if: always()
       uses: actions/upload-artifact@v4
       with:
