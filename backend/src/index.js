@@ -26,7 +26,7 @@ const app = express();
 const server = createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ['https://baby-ai.vercel.app', 'http://localhost:3000'],
+    origin: ['https://baby-ai.vercel.app', 'http://localhost:3000', 'https://whatsapp-bot-dashboard-dnakfvf8r-jethro-elijah-lims-projects.vercel.app/'],
     methods: ['GET', 'POST'],
     credentials: true
   }
