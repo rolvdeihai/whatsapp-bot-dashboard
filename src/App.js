@@ -8,167 +8,106 @@ function App() {
   const [socket, setSocket] = useState(null);
   const [qrCode, setQrCode] = useState('');
   const [botStatus, setBotStatus] = useState('disconnected');
-  const [groups, setGroups] = useState([]);
+  const [savedGroups, setSavedGroups] = useState([]);
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedGroups, setSelectedGroups] = useState(() => {
-    const savedGroups = localStorage.getItem('activeGroups');
-    return savedGroups ? JSON.parse(savedGroups) : [];
+    const saved = localStorage.getItem('activeGroups');
+    return saved ? JSON.parse(saved) : [];
   });
   const [isLoading, setIsLoading] = useState(false);
-  const [groupsLoading, setGroupsLoading] = useState(false);
-  const [visibleGroups, setVisibleGroups] = useState(20);
+  const [searching, setSearching] = useState(false);
 
-  // Refs for stable values
-  const selectedGroupsRef = useRef(selectedGroups);
-  const groupsLoadedRef = useRef(false);
-  const loadAttemptRef = useRef(0);
-
-  // Update ref when selectedGroups changes
-  useEffect(() => {
-    selectedGroupsRef.current = selectedGroups;
-  }, [selectedGroups]);
-
-  // 🚀 STABLE: Fetch groups with retry logic
-  const fetchGroups = async (usePreview = true) => {
-    if (groupsLoading) return;
-    
-    setGroupsLoading(true);
-    loadAttemptRef.current += 1;
-    const currentAttempt = loadAttemptRef.current;
-
-    try {
-      console.log(`🔄 Attempt ${currentAttempt}: Loading groups...`);
-      
-      let endpoint = usePreview ? '/api/groups/preview' : '/api/groups';
-      const response = await fetch(`${backendUrl}${endpoint}`);
-      
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      
-      const groupsData = await response.json();
-      console.log(`✅ Loaded ${groupsData.length} groups`);
-
-      // Only update if this is the most recent request
-      if (currentAttempt === loadAttemptRef.current) {
-        setGroups(groupsData);
-        groupsLoadedRef.current = true;
-
-        // Load details for selected groups
-        if (groupsData.length > 0 && selectedGroupsRef.current.length > 0) {
-          loadSelectedGroupsDetails(selectedGroupsRef.current);
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching groups:', error);
-      
-      // Retry with full endpoint if preview fails
-      if (usePreview && currentAttempt === loadAttemptRef.current) {
-        console.log('🔄 Preview failed, trying full endpoint...');
-        await fetchGroups(false);
-      }
-    } finally {
-      if (currentAttempt === loadAttemptRef.current) {
-        setGroupsLoading(false);
-      }
+  // 🚀 SIMPLIFIED: Load only saved groups
+  const loadSavedGroups = async () => {
+    if (selectedGroups.length === 0) {
+      setSavedGroups([]);
+      return;
     }
-  };
 
-  const loadSelectedGroupsDetails = async (groupIds) => {
-    if (groupIds.length === 0) return;
-    
     try {
-      console.log(`🔍 Loading details for ${groupIds.length} selected groups...`);
-      const response = await fetch(`${backendUrl}/api/groups/details`, {
+      const response = await fetch(`${backendUrl}/api/groups/saved`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ groupIds }),
+        body: JSON.stringify({ groupIds: selectedGroups }),
       });
 
       if (response.ok) {
-        const detailedGroups = await response.json();
-        
-        setGroups(prevGroups => 
-          prevGroups.map(group => {
-            const detailed = detailedGroups.find(g => g.id === group.id);
-            return detailed ? { ...group, ...detailed } : group;
-          })
-        );
+        const groups = await response.json();
+        setSavedGroups(groups);
       }
     } catch (error) {
-      console.error('Error loading group details:', error);
+      console.error('Error loading saved groups:', error);
     }
   };
 
-  // 🚀 STABLE: Socket connection - runs only once
+  // 🚀 SIMPLIFIED: Search groups
+  const searchGroups = async () => {
+    if (!searchQuery || searchQuery.length < 2) {
+      setSearchResults([]);
+      return;
+    }
+
+    setSearching(true);
+    try {
+      const response = await fetch(`${backendUrl}/api/groups/search?q=${encodeURIComponent(searchQuery)}`);
+      if (response.ok) {
+        const results = await response.json();
+        setSearchResults(results);
+      }
+    } catch (error) {
+      console.error('Error searching groups:', error);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // 🚀 SIMPLIFIED: Socket connection
   useEffect(() => {
-    console.log('🔌 Initializing socket connection...');
     const newSocket = io(backendUrl, {
       transports: ['websocket', 'polling'],
-      timeout: 10000,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000
+      timeout: 10000
     });
 
     setSocket(newSocket);
 
-    const handleQrCode = (data) => {
-      console.log('📱 QR code received');
+    newSocket.on('qr-code', (data) => {
       setQrCode(data.qr);
       setIsLoading(false);
-    };
+    });
 
-    const handleBotStatus = (data) => {
-      console.log('🤖 Bot status:', data.status);
+    newSocket.on('bot-status', (data) => {
       setBotStatus(data.status);
       setIsLoading(false);
-      
-      if (data.qrCode) {
-        setQrCode(data.qrCode);
-      }
-    };
+      if (data.qrCode) setQrCode(data.qrCode);
+    });
 
-    const handleActiveGroups = (data) => {
-      console.log('📋 Active groups updated:', data.groups.length);
+    newSocket.on('active-groups-updated', (data) => {
       setSelectedGroups(data.groups);
       localStorage.setItem('activeGroups', JSON.stringify(data.groups));
-    };
+    });
 
-    const handleBotError = (data) => {
-      console.error('❌ Bot error:', data.error);
+    newSocket.on('bot-error', (data) => {
       alert('Bot error: ' + data.error);
       setIsLoading(false);
-    };
+    });
 
-    newSocket.on('qr-code', handleQrCode);
-    newSocket.on('bot-status', handleBotStatus);
-    newSocket.on('active-groups-updated', handleActiveGroups);
-    newSocket.on('bot-error', handleBotError);
-    newSocket.on('connect', () => console.log('✅ Socket connected'));
-    newSocket.on('disconnect', () => console.log('🔌 Socket disconnected'));
-
-    return () => {
-      console.log('🧹 Cleaning up socket...');
-      newSocket.off('qr-code', handleQrCode);
-      newSocket.off('bot-status', handleBotStatus);
-      newSocket.off('active-groups-updated', handleActiveGroups);
-      newSocket.off('bot-error', handleBotError);
-      newSocket.close();
-    };
+    return () => newSocket.close();
   }, []);
 
-  // 🚀 STABLE: Load groups when bot becomes ready
+  // 🚀 SIMPLIFIED: Load saved groups when selection changes
   useEffect(() => {
-    if ((botStatus === 'connected' || botStatus === 'session_exists') && !groupsLoadedRef.current) {
-      console.log(`🚀 Bot is ${botStatus}, loading groups...`);
-      fetchGroups(true);
+    if (botStatus === 'connected' || botStatus === 'session_exists') {
+      loadSavedGroups();
     }
-  }, [botStatus]);
+  }, [selectedGroups, botStatus]);
 
-  // 🚀 STABLE: Initial session check
+  // 🚀 SIMPLIFIED: Initial session check
   useEffect(() => {
     const checkSessionStatus = async () => {
       try {
         const response = await fetch(`${backendUrl}/api/bot-status`);
         const data = await response.json();
-        console.log('🔍 Initial session status:', data.status);
         setBotStatus(data.status);
       } catch (error) {
         console.log('Error checking session status:', error);
@@ -178,30 +117,17 @@ function App() {
     checkSessionStatus();
   }, []);
 
-  // Reset when bot disconnects
-  useEffect(() => {
-    if (botStatus === 'disconnected') {
-      groupsLoadedRef.current = false;
-      loadAttemptRef.current = 0;
-    }
-  }, [botStatus]);
-
   const startBot = () => {
     if (isLoading || !socket) return;
-    console.log('🎯 Manually starting bot');
     setIsLoading(true);
     socket.emit('start-bot');
   };
 
   const stopBot = () => {
     if (!socket) return;
-    console.log('🛑 Manually stopping bot');
     socket.emit('stop-bot');
     setIsLoading(false);
     setQrCode('');
-    groupsLoadedRef.current = false;
-    loadAttemptRef.current = 0;
-    setGroups([]);
   };
 
   const toggleGroup = (groupId) => {
@@ -211,41 +137,40 @@ function App() {
     
     setSelectedGroups(newSelectedGroups);
     localStorage.setItem('activeGroups', JSON.stringify(newSelectedGroups));
-
-    // Load details for newly selected group
-    if (!selectedGroups.includes(groupId)) {
-      loadSelectedGroupsDetails([groupId]);
-    }
   };
 
   const saveActiveGroups = async () => {
     try {
-      await fetch(`${backendUrl}/api/active-groups`, {
+      const response = await fetch(`${backendUrl}/api/active-groups`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({ groups: selectedGroups }),
       });
-      alert('✅ Active groups updated successfully!');
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.success) {
+        alert('✅ Active groups saved!');
+      } else {
+        throw new Error(result.error || 'Failed to save groups');
+      }
     } catch (error) {
       console.error('Error saving groups:', error);
-      alert('❌ Failed to save groups');
+      alert(`❌ Failed to save groups: ${error.message}`);
     }
   };
 
-  const reloadGroups = () => {
-    groupsLoadedRef.current = false;
-    loadAttemptRef.current = 0;
-    fetchGroups(true);
+  const handleSearch = (e) => {
+    e.preventDefault();
+    searchGroups();
   };
-
-  const loadMoreGroups = () => {
-    setVisibleGroups(prev => prev + 20);
-  };
-
-  // Reset visible groups when groups change
-  useEffect(() => {
-    setVisibleGroups(20);
-  }, [groups]);
 
   return (
     <div className="App">
@@ -253,14 +178,12 @@ function App() {
         <h1>WhatsApp Bot Dashboard</h1>
         <div className={`status ${botStatus}`}>
           Status: {botStatus === 'session_exists' ? 'Session Found (Auto-connecting...)' : botStatus}
-          {groupsLoading && ' • Loading groups...'}
         </div>
       </header>
 
       <div className="dashboard">
         <section className="connection-section">
           <h2>Bot Connection</h2>
-          <p><em>Bot runs automatically. Use controls below for manual management.</em></p>
           <div className="button-group">
             <button 
               onClick={startBot} 
@@ -290,39 +213,30 @@ function App() {
 
         {(botStatus === 'connected' || botStatus === 'session_exists') && (
           <section className="groups-section">
-            <div className="groups-header">
-              <h2>Select Active Groups</h2>
-              <div className="groups-controls">
-                <button 
-                  onClick={reloadGroups}
-                  disabled={groupsLoading}
-                  className="btn btn-secondary"
-                >
-                  {groupsLoading ? 'Loading...' : `Reload Groups (${groups.length})`}
+            <h2>Manage Active Groups</h2>
+            
+            {/* 🚀 SIMPLIFIED: Search to add groups */}
+            <div className="search-section">
+              <h3>Add New Groups</h3>
+              <form onSubmit={handleSearch} className="search-form">
+                <input
+                  type="text"
+                  placeholder="Search for groups by name..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="search-input"
+                />
+                <button type="submit" disabled={searching || !searchQuery} className="btn btn-secondary">
+                  {searching ? 'Searching...' : 'Search'}
                 </button>
-              </div>
-            </div>
-            
-            <p>Choose which groups the bot should respond in:</p>
-            
-            <div className="groups-list">
-              {groupsLoading && groups.length === 0 ? (
-                <div className="loading-groups">
-                  <p>Loading groups...</p>
-                  <div className="loading-spinner"></div>
-                </div>
-              ) : groups.length === 0 ? (
-                <div className="no-groups">
-                  <p>No groups found.</p>
-                  <button onClick={reloadGroups} className="btn btn-outline">
-                    Try Again
-                  </button>
-                </div>
-              ) : (
-                <>
-                  {groups.slice(0, visibleGroups).map(group => (
+              </form>
+
+              {searchResults.length > 0 && (
+                <div className="search-results">
+                  <h4>Search Results ({searchResults.length})</h4>
+                  {searchResults.map(group => (
                     <div key={group.id} className="group-item">
-                      <label className="group-label">
+                      <label>
                         <input
                           type="checkbox"
                           checked={selectedGroups.includes(group.id)}
@@ -330,37 +244,58 @@ function App() {
                           disabled={botStatus === 'session_exists'}
                         />
                         <span className="group-name">{group.name}</span>
-                        <span className="group-participants">
-                          ({group.participants || '...'} participants)
-                        </span>
                       </label>
                     </div>
                   ))}
-                  
-                  {visibleGroups < groups.length && (
-                    <div className="load-more">
-                      <button onClick={loadMoreGroups} className="btn btn-outline">
-                        Load More ({groups.length - visibleGroups} remaining)
-                      </button>
-                    </div>
-                  )}
-                </>
+                </div>
               )}
             </div>
-            
-            {selectedGroups.length > 0 && (
-              <button 
-                onClick={saveActiveGroups} 
-                disabled={groupsLoading || botStatus === 'session_exists'}
-                className="btn btn-success"
-              >
-                {botStatus === 'session_exists' ? 'Wait for Connection...' : `Save ${selectedGroups.length} Active Groups`}
-              </button>
-            )}
+
+            {/* 🚀 SIMPLIFIED: Show only saved groups */}
+            <div className="saved-groups">
+              <h3>Active Groups ({selectedGroups.length})</h3>
+              
+              {selectedGroups.length === 0 ? (
+                <p className="no-groups">No active groups. Use search above to add groups.</p>
+              ) : (
+                <div className="groups-list">
+                  {savedGroups.map(group => (
+                    <div key={group.id} className="group-item saved">
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={true}
+                          onChange={() => toggleGroup(group.id)}
+                          disabled={botStatus === 'session_exists'}
+                        />
+                        <span className="group-name">{group.name}</span>
+                        <button 
+                          onClick={() => toggleGroup(group.id)}
+                          className="btn-remove"
+                          title="Remove group"
+                        >
+                          ×
+                        </button>
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {selectedGroups.length > 0 && (
+                <button 
+                  onClick={saveActiveGroups} 
+                  disabled={botStatus === 'session_exists'}
+                  className="btn btn-success save-btn"
+                >
+                  Save Active Groups
+                </button>
+              )}
+            </div>
 
             {botStatus === 'session_exists' && (
               <div className="info-message">
-                <p>📱 <strong>Session detected!</strong> The bot is automatically reconnecting.</p>
+                <p>📱 <strong>Auto-connecting...</strong> You can search for groups but cannot modify selections until connected.</p>
               </div>
             )}
           </section>

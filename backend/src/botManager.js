@@ -110,216 +110,121 @@ class BotManager {
     }
   }
 
-  // Add this method to your BotManager class for better group fetching
-  async getGroupsWithRetry(forceRefresh = false, retryCount = 0) {
-    const maxRetries = 3;
-    
-    try {
-      const groups = await this.getGroups(forceRefresh);
-      
-      // If no groups but we have an active client, try to force refresh
-      if (groups.length === 0 && this.client && this.client.info && retryCount < maxRetries) {
-        console.log(`🔄 No groups found, retrying... (${retryCount + 1}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        return this.getGroupsWithRetry(true, retryCount + 1);
-      }
-      
-      return groups;
-    } catch (error) {
-      if (retryCount < maxRetries) {
-        console.log(`🔄 Error fetching groups, retrying... (${retryCount + 1}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        return this.getGroupsWithRetry(forceRefresh, retryCount + 1);
-      }
-      throw error;
-    }
-  }
-
-  // Update the getGroups method to be more robust
-  async getGroups(forceRefresh = false) {
-    const now = Date.now();
-    
-    // Return cached data if still valid and not forcing refresh
-    if (!forceRefresh && 
-        this.groupsCache.data.length > 0 && 
-        (now - this.groupsCache.lastUpdated) < this.groupsCache.cacheDuration) {
-      console.log('📁 Returning cached groups');
-      return this.groupsCache.data;
-    }
-
-    // If already updating, wait a bit and return current cache
-    if (this.groupsCache.isUpdating) {
-      console.log('🔄 Groups update in progress, waiting...');
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      return this.groupsCache.data.length > 0 ? this.groupsCache.data : [];
-    }
-
-    this.groupsCache.isUpdating = true;
-    
+  // 🚀 SIMPLIFIED: Remove all complex groups caching and processing
+  async getGroups() {
     try {
       if (!this.client || !this.client.info) {
         console.log('⚠️ Bot client not ready');
-        return this.groupsCache.data.length > 0 ? this.groupsCache.data : [];
+        return [];
       }
 
-      console.time('🕒 GroupFetchTime');
+      console.time('🕒 QuickGroupFetch');
       const chats = await this.client.getChats();
-      console.timeEnd('🕒 GroupFetchTime');
+      console.timeEnd('🕒 QuickGroupFetch');
 
       if (!Array.isArray(chats)) {
-        console.warn('⚠️ getChats() did not return an array');
-        return this.groupsCache.data;
-      }
-
-      const groupChats = chats.filter(chat => {
-        try {
-          return !!chat && !!chat.isGroup;
-        } catch (e) {
-          return false;
-        }
-      });
-
-      console.log(`🔍 Found ${groupChats.length} group chats, processing...`);
-
-      // 🚀 PERFORMANCE: Use simpler processing for deployment
-      const groupData = [];
-      
-      for (let i = 0; i < groupChats.length; i++) {
-        const group = groupChats[i];
-        try {
-          const id = group?.id?._serialized;
-          if (!id) continue;
-          
-          const name = group?.name || group?.subject || 'Unknown Group';
-          const participants = Array.isArray(group.participants) ? group.participants.length : 0;
-
-          groupData.push({ id, name, participants });
-          
-          // Process in chunks to prevent blocking
-          if (i % 10 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 10));
-          }
-        } catch (err) {
-          console.warn('⚠️ Error processing group:', err.message);
-        }
-      }
-
-      const validGroups = groupData.filter(g => g && g.id);
-      
-      this.groupsCache.data = validGroups;
-      this.groupsCache.lastUpdated = now;
-      
-      console.log(`✅ Successfully loaded ${validGroups.length} groups`);
-      return validGroups;
-
-    } catch (error) {
-      console.error('❌ Error fetching groups:', error);
-      return this.groupsCache.data.length > 0 ? this.groupsCache.data : [];
-    } finally {
-      this.groupsCache.isUpdating = false;
-    }
-  }
-
-  // Update the getGroupsPreview method
-  async getGroupsPreview() {
-    try {
-      if (!this.client || !this.client.info) {
-        console.log('⚠️ Bot client not ready for preview');
         return [];
       }
 
-      // Use the cached data if available for faster response
-      if (this.groupsCache.data.length > 0) {
-        console.log('📁 Using cached groups for preview');
-        return this.groupsCache.data.slice(0, 50).map(group => ({
-          ...group,
-          participants: group.participants || '...'
-        }));
+      // 🚀 SIMPLIFIED: Only get basic group info - no participants, no metadata
+      const groups = [];
+      for (const chat of chats) {
+        if (chat?.isGroup) {
+          groups.push({
+            id: chat.id?._serialized,
+            name: chat.name || chat.subject || 'Unknown Group',
+            // 🚀 MEMORY SAVING: No participant count, no metadata
+          });
+        }
+        
+        // 🚀 MEMORY SAVING: Limit to 100 groups maximum
+        if (groups.length >= 100) break;
       }
 
-      // If no cache, try quick fetch
-      const chats = await this.client.getChats();
-      const groupChats = chats.filter(chat => chat?.isGroup);
+      console.log(`✅ Quickly loaded ${groups.length} groups (basic info only)`);
+      return groups;
 
-      const previewData = groupChats.slice(0, 30).map(group => ({
-        id: group?.id?._serialized,
-        name: group?.name || group?.subject || 'Unknown Group',
-        participants: '...' // Placeholder for fast loading
-      }));
-
-      console.log(`✅ Generated preview for ${previewData.length} groups`);
-      return previewData;
     } catch (error) {
-      console.error('Error fetching groups preview:', error);
+      console.error('❌ Error in quick groups fetch:', error);
       return [];
     }
   }
 
-  // 🚀 PERFORMANCE: Quick groups preview (fast loading)
-  async getGroupsPreview() {
+  // 🚀 NEW: Search groups by name (lightweight)
+  async searchGroups(query) {
     try {
       if (!this.client || !this.client.info) {
         return [];
       }
 
-      const chats = await this.client.getChats();
-      const groupChats = chats.filter(chat => chat?.isGroup);
-
-      const previewData = groupChats.slice(0, 50).map(group => ({
-        id: group?.id?._serialized,
-        name: group?.name || group?.subject || 'Unknown Group',
-        participants: '...'
-      }));
-
-      return previewData;
-    } catch (error) {
-      console.error('Error fetching groups preview:', error);
-      return [];
-    }
-  }
-
-  // 🚀 PERFORMANCE: Get detailed info for specific groups only
-  async getGroupDetails(groupIds) {
-    try {
-      if (!this.client || !this.client.info) {
+      if (!query || query.length < 2) {
         return [];
       }
 
+      console.log(`🔍 Searching groups for: "${query}"`);
       const chats = await this.client.getChats();
-      const detailedGroups = [];
+      const searchTerm = query.toLowerCase();
 
-      for (const groupId of groupIds) {
-        const group = chats.find(chat => 
-          chat?.isGroup && chat?.id?._serialized === groupId
-        );
-
-        if (group) {
-          try {
-            const metadata = await group.groupMetadata?.catch(() => null);
-            const participants = metadata?.participants?.length || group.participants?.length || 0;
+      const results = [];
+      for (const chat of chats) {
+        if (chat?.isGroup) {
+          const name = (chat.name || chat.subject || '').toLowerCase();
+          if (name.includes(searchTerm)) {
+            results.push({
+              id: chat.id?._serialized,
+              name: chat.name || chat.subject || 'Unknown Group',
+            });
             
-            detailedGroups.push({
-              id: groupId,
-              name: group.name || group.subject || 'Unknown Group',
-              participants,
-              description: metadata?.description || '',
-              createdAt: metadata?.creation || 0
-            });
-          } catch (err) {
-            detailedGroups.push({
-              id: groupId,
-              name: group.name || group.subject || 'Unknown Group',
-              participants: group.participants?.length || 0,
-              description: '',
-              createdAt: 0
-            });
+            // 🚀 MEMORY SAVING: Limit search results
+            if (results.length >= 20) break;
           }
         }
       }
 
-      return detailedGroups;
+      console.log(`✅ Found ${results.length} groups matching "${query}"`);
+      return results;
+
     } catch (error) {
-      console.error('Error fetching group details:', error);
+      console.error('❌ Error searching groups:', error);
+      return [];
+    }
+  }
+
+  // 🚀 NEW: Get only saved groups (very lightweight)
+  async getSavedGroups(groupIds) {
+    try {
+      if (!this.client || !this.client.info || !Array.isArray(groupIds)) {
+        return [];
+      }
+
+      if (groupIds.length === 0) {
+        return [];
+      }
+
+      console.log(`📁 Loading ${groupIds.length} saved groups`);
+      const chats = await this.client.getChats();
+      
+      const savedGroups = [];
+      for (const groupId of groupIds) {
+        const chat = chats.find(c => c?.isGroup && c.id?._serialized === groupId);
+        if (chat) {
+          savedGroups.push({
+            id: groupId,
+            name: chat.name || chat.subject || 'Unknown Group',
+          });
+        }
+        
+        // 🚀 MEMORY SAVING: Process in small batches
+        if (savedGroups.length % 10 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+      }
+
+      console.log(`✅ Loaded ${savedGroups.length} saved groups`);
+      return savedGroups;
+
+    } catch (error) {
+      console.error('❌ Error loading saved groups:', error);
       return [];
     }
   }
