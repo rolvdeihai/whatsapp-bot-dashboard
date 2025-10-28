@@ -30,7 +30,10 @@ function App() {
     try {
       const response = await fetch(`${backendUrl}/api/groups/saved`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'ngrok-skip-browser-warning': '1',
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({ groupIds: selectedGroups }),
       });
 
@@ -145,8 +148,9 @@ function App() {
     try {
       const response = await fetch(`${backendUrl}/api/active-groups`, {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
+        headers: {
+          'ngrok-skip-browser-warning': '1',
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ groups: selectedGroups }),
       });
