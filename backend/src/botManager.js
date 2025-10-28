@@ -1,3 +1,5 @@
+// backend/src/botManager.js
+
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
 import QRCode from 'qrcode';
