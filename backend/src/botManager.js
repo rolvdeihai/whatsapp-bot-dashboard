@@ -715,7 +715,7 @@ class BotManager {
           }
         },
         {
-          timeout: 2 * 60 * 1000,
+          timeout: 10 * 60 * 1000,
           headers: { 'Content-Type': 'application/json' },
         }
       );
@@ -756,7 +756,7 @@ class BotManager {
           }
         },
         {
-          timeout: 3 * 60 * 1000,
+          timeout: 10 * 60 * 1000,
           headers: { 'Content-Type': 'application/json' },
         }
       );

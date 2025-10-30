@@ -1,0 +1,1573 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Smart Resume — Jobs + Tailor</title>
+<style>
+  :root { --bg:#0b1220; --panel:#121a2b; --muted:#a9b3c5; --text:#eaf0ff; --line:rgba(255,255,255,.14); }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:transparent;color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif;overflow-x:hidden}
+  body{min-height:100vh}
+  .wrap{padding:14px 14px 40px; max-width:100%; width:100%}
+  .match-notice{font-size:12px;line-height:1.4;opacity:.9;margin:0 0 6px}
+  .match-notice a{color:inherit;text-decoration:underline}
+  .consent-row{display:flex;align-items:center;gap:.55rem;margin:6px 0 12px}
+  .consent-row input{transform:scale(1.1)}
+
+  .uploader{border:1px dashed var(--line);border-radius:14px;padding:16px;text-align:center;background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.03));margin-bottom:12px;outline:none}
+  .uploader.drag{background:rgba(255,255,255,.12)}
+  .uploader p{margin:0 0 8px;font-weight:600}
+  .uploader small{color:var(--muted)}
+  .btn{display:inline-block;padding:8px 12px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--text);font-weight:600;font-size:13px;text-decoration:none;cursor:pointer;white-space:nowrap}
+  .btn:hover{background:rgba(255,255,255,.12)}
+  .btn:disabled{opacity:.6;cursor:not-allowed}
+  input[type="file"]{display:none}
+  #status{color:var(--muted);margin:6px 0 10px}
+
+  .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0 14px}
+  .input{flex:1;min-width:180px;background:#fff;color:#000;border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  .input::placeholder{color:#666}
+  .checkbox{display:flex;align-items:center;gap:6px;color:#cbd5e1;font-size:12px}
+
+  /* FIXED: No grid scroll, just natural flow */
+  #grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
+    gap:16px;
+    width:100%;
+    margin-bottom:20px;
+  }
+  
+  /* IMPROVED: Larger, better spaced cards */
+  .card{
+    background:linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.04));
+    border:1px solid var(--line);
+    border-radius:16px;
+    padding:18px;
+    color:#fff;
+    cursor:pointer;
+    min-height:220px;
+    display:flex;
+    flex-direction:column;
+  }
+  .card:hover{background:linear-gradient(180deg,rgba(255,255,255,.12),rgba(255,255,255,.08))}
+  .card .title{font-weight:800;margin:0 0 8px;color:#fff;font-size:16px;line-height:1.3}
+  .meta{color:rgba(234,240,255,.78);margin:0 0 8px;font-size:12px;line-height:1.4}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+  .salary{font-weight:600;font-size:13px}
+  .pill{display:inline-block;padding:3px 10px;border:1px solid var(--line);border-radius:999px;font-size:11px;color:#fff;opacity:.95;white-space:nowrap}
+  .match-badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:700;border:1px solid var(--line);background:rgba(255,255,255,.10);color:#fff;white-space:nowrap}
+  .match-badge.good{ background:#e6f4ea; color:#034d1f }
+  .match-badge.medium{ background:#fef7e0; color:#6a4b00 }
+  .match-badge.low{ background:#fce8e6; color:#6b110d }
+  .empty{color:var(--muted);margin:20px 0;text-align:center;font-size:14px}
+
+  #loadMoreWrap{display:none;text-align:center;margin:20px 0 30px}
+  #loadMore{min-width:220px;padding:10px 16px}
+
+ /* FIXED: Detail panel positioning for iframe */
+#detail {
+  position: fixed;
+  right: 14px;
+  top: 14px;
+  bottom: 14px;
+  width: min(520px, 95vw);
+  display: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 9999;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+#detail .h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+#detail .h strong {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+#detail .body {
+  width: 100%;
+  padding: 0;
+}
+
+#detail .desc {
+  white-space: pre-wrap;
+  color: rgba(234, 240, 255, 0.92);
+  line-height: 1.6;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+#detail .row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+#detail .input {
+  background: #fff;
+  color: #000;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+#detail .input[type="email"] {
+  margin-top: 8px;
+}
+
+#detail textarea.input {
+  resize: vertical;
+  min-height: 100px;
+  max-height: 200px;
+}
+
+#detail .btn {
+  flex: 1;
+  text-align: center;
+  padding: 10px 12px;
+  font-size: 13px;
+  border-radius: 10px;
+  min-width: 100px;
+}
+
+#detail .meta {
+  color: rgba(234, 240, 255, 0.78);
+  font-size: 11px;
+  line-height: 1.4;
+  margin-top: 6px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  #detail {
+    left: 14px;
+    right: 14px;
+    width: auto;
+  }
+  #detail .btn {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+}
+
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="match-notice">
+      We keep a scrubbed copy of your resume to improve matching (no emails, phones, or addresses).
+      <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>
+    </div>
+    <label class="consent-row"><input id="consent" type="checkbox" checked> Help improve matches by allowing a scrubbed copy (no contact details).</label>
+
+    <div id="uploadGuide" class="guide" style="display:none;">
+      Upload your resume here first to start finding job recommendations based on your resume!
+      <span class="arrow">↓</span>
+      <span class="guide-dismiss">×</span>
+    </div>
+
+    <div id="up" class="uploader" tabindex="0" aria-label="Upload resume by clicking or dropping a file">
+      <p>Upload your resume</p>
+      <label class="btn">Choose file <input id="file" type="file" accept=".pdf,.docx,.odt,.txt" /></label>
+      <div><small>or drag & drop PDF, DOCX, ODT, or TXT here</small></div>
+      <div id="status" aria-live="polite"></div>
+    </div>
+
+    <div class="toolbar">
+      <input id="kw" class="input" type="text" placeholder="Keywords (e.g., epic trainer, react, fp&a)" />
+      <input id="loc" class="input" type="text" placeholder="Location (optional, e.g., Detroit, MI)" />
+      <label class="checkbox"><input id="remoteOnly" type="checkbox" checked> Remote</label>
+
+      <input id="minSalary" class="input" type="number" min="0" step="1000" placeholder="Min salary ($)" />
+      <select id="mode" class="input" style="max-width:180px">
+        <option value="">Any mode</option>
+        <option value="remote">Remote</option>
+        <option value="hybrid">Hybrid</option>
+        <option value="onsite">Onsite</option>
+      </select>
+
+      <!-- Level filter -->
+      <select id="category" class="input" style="max-width:180px">
+        <option value="">All levels</option>
+        <option value="entry">Entry-level</option>
+        <option value="professional">Professional</option>
+      </select>
+
+      <button id="filterBtn" class="btn" title="Filter current results instantly">Filter</button>
+      <button id="searchBtn" class="btn" title="Fetch new results via scraper">Search Web</button>
+      <button id="clearBtn" class="btn" title="Clear filters">Clear</button>
+    </div>
+
+    <div id="jobGuide" class="guide" style="display:none;">
+      Click "Preview" on any job you like, then "Tailor Resume" to get a customized version!
+      <span class="arrow">→</span>
+      <span class="guide-dismiss">×</span>
+    </div>
+
+    <div id="grid" aria-live="polite"></div>
+    <div id="loadMoreWrap"><button id="loadMore" class="btn">Load More</button></div>
+  </div>
+
+<aside id="detail">
+  <div class="h">
+    <div>
+      <strong id="dTitle"></strong>
+      <div class="meta" id="dMeta"></div>
+    </div>
+    <button id="dClose" class="btn">Close</button>
+  </div>
+  
+  <div class="body">  <!-- Body starts here -->
+    <div class="desc" id="dDesc"></div>
+    
+    <!-- Move the textarea HERE, inside body -->
+    <div style="margin-top:12px">
+      <label class="meta" style="display:block;margin-bottom:6px">
+        Or paste your own job description:
+      </label>
+      <textarea id="customJobDesc" class="input" rows="6" placeholder="Paste job description here to tailor your resume to any job..."></textarea>
+      <div class="meta" style="margin-top:4px;font-size:11px">
+        This will override the job description from the listing above.
+      </div>
+    </div>
+    
+    <div class="row" style="margin-top:12px">
+      <a id="dView" class="btn" target="_blank" rel="noopener">Open Job</a>
+      <button id="dTailor" class="btn">Tailor Resume</button>
+      <button id="dSendTest" class="btn">Send Test Email</button>
+    </div>
+    
+    <div style="margin-top:12px">
+      <label class="meta" style="display:block;margin-bottom:6px">Email me a copy (optional):</label>
+      <input id="email" class="input" type="email" placeholder="you@example.com" />
+      <div class="meta" style="margin-top:6px;color:#a9b3c5">Leave blank to download only.</div>
+    </div>
+  </div>  <!-- Body ends here -->
+</aside>
+
+  <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <script>
+  console.log('CODE VERSION: 2025-10-23-WIX-OPTIMIZED SUPABASE-ONLY + LEVEL-FILTER');
+
+  /* ===== IFRAME HEIGHT AUTO-RESIZE ===== */
+  function notifyHeight() {
+    const height = Math.max(
+      document.documentElement.scrollHeight,
+      document.documentElement.offsetHeight,
+      document.body.scrollHeight,
+      document.body.offsetHeight
+    );
+    parent.postMessage({ type: 'setHeight', height: height + 50 }, '*');
+  }
+
+  // Notify parent of height changes
+  const resizeObserver = new ResizeObserver(() => notifyHeight());
+  resizeObserver.observe(document.body);
+  window.addEventListener('load', notifyHeight);
+
+  /* ===== CONFIG ===== */
+  // const SCRAPER_BASE = "https://resilio-ats.vercel.app/api";
+  // const SCRAPE_URL = SCRAPER_BASE + "/bing-indeed";
+  // const SCRAPE_FROM_FILE_URL = SCRAPER_BASE + "/bing-indeed-file";
+  const SCRAPER_REGION_DEFAULT = "US";
+  const FETCH_TIMEOUT_MS = 75000;
+  const FETCH_RETRY = 1;
+
+  // ⛳ SUPABASE CONFIG - Replace with your actual values
+const SUPABASE_URL = 'https://filscxvolszfpbrdmltw.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZpbHNjeHZvbHN6ZnBicmRtbHR3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk5MTQwNzEsImV4cCI6MjA3NTQ5MDA3MX0.fEvaGzqNmOa2FvrtdXVTRiK-_-tpYJYGyoBS6CfbY0M';
+
+  const SUPABASE_TABLE = "job_listings";
+  const SUPABASE_FETCH_LIMIT = 50;
+
+  // TAILOR RESUME API
+  const TAILOR_API = "https://resilio-ats.vercel.app/api/tailor";
+  // const SEND_TEST_EMAIL_API = "https://resilio-ats.vercel.app/api/send-test-email";
+
+  /* ===== DOM ELEMENTS ===== */
+  const grid = document.getElementById('grid');
+  const up = document.getElementById('up');
+  const fileInput = document.getElementById('file');
+  const statusEl = document.getElementById('status');
+  const kwInput = document.getElementById('kw');
+  const locInput = document.getElementById('loc');
+  const remoteOnly = document.getElementById('remoteOnly');
+  const filterBtn = document.getElementById('filterBtn');
+  const searchBtn = document.getElementById('searchBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const loadMoreWrap = document.getElementById('loadMoreWrap');
+  const loadMoreBtn = document.getElementById('loadMore');
+  const detail = document.getElementById('detail');
+  const dTitle = document.getElementById('dTitle');
+  const dMeta  = document.getElementById('dMeta');
+  const dDesc  = document.getElementById('dDesc');
+  const dView  = document.getElementById('dView');
+  const dClose = document.getElementById('dClose');
+  const dTailor= document.getElementById('dTailor');
+  const dSendTest = document.getElementById('dSendTest');
+  const emailInput = document.getElementById('email');
+  const minSalaryInput = document.getElementById('minSalary');
+  const modeSelect = document.getElementById('mode');
+  const categorySelect = document.getElementById('category');
+  const uploadGuide = document.getElementById('uploadGuide');
+  const jobGuide = document.getElementById('jobGuide');
+
+  /* ===== STORAGE KEYS ===== */
+  const RESUME_TEXT_KEY = 'resume_text_v1';
+  const CAND_KEY='resume_profile_v1';
+  const KW_KEY='last_keywords_v1';
+  const EMAIL_KEY='user_email_v1';
+  const GUIDE_DISMISSED_KEY = 'guide_dismissed_v1';
+
+  /* ===== STATE ===== */
+  let resumeText = localStorage.getItem(RESUME_TEXT_KEY) || '';
+  let CAND = JSON.parse(localStorage.getItem(CAND_KEY) || '{"titles":[],"skills":[],"seniority":"mid"}');
+  if (localStorage.getItem(KW_KEY)) kwInput.value = localStorage.getItem(KW_KEY);
+  if (localStorage.getItem(EMAIL_KEY)) emailInput.value = localStorage.getItem(EMAIL_KEY);
+
+  let allItems = [];
+  let viewItems = [];
+  let firstRenderDone = false;
+  let lastQuery = "";
+  let lastLocation = "";
+  let lastRemote = "remote";
+  let selectedJob = null;
+  let page = 1;
+  let resumeUploaded = !!resumeText;
+  let supabaseOffset = 0;
+  let supabaseExhausted = false;
+
+  // Accept ?cat=entry|professional to preselect
+  const urlParams = new URLSearchParams(location.search);
+  const urlCat = urlParams.get('cat');
+  if (urlCat === 'entry' || urlCat === 'professional') {
+    categorySelect.value = urlCat;
+  }
+
+  function currentLimit() {
+    return resumeUploaded ? 12 : 20;
+  }
+
+  function visibleCap() {
+    return currentLimit() * page;
+  }
+
+  if (!resumeText && !localStorage.getItem(GUIDE_DISMISSED_KEY)) uploadGuide.style.display = 'block';
+
+  /* ===== UTILS ===== */
+  const esc = s => String(s||'').replace(/[&<>"']/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  const fmtDate = d => { if(!d) return ''; const dt=new Date(d); return isNaN(dt)?esc(d):dt.toLocaleString(); };
+  
+  function formatAgo(d){ 
+    const ms=Date.now()-d.getTime(),m=Math.floor(ms/60000); 
+    if(m<60)return m<=1?'just now':`${m}m ago`; 
+    const h=Math.floor(m/60); 
+    if(h<24)return h===1?'1h ago':`${h}h ago`; 
+    const days=Math.floor(h/24); 
+    if(days===1)return'yesterday'; 
+    if(days<14)return`${days}d ago`; 
+    const w=Math.floor(days/7); 
+    if(w<9)return`${w}w ago`; 
+    return d.toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'}); 
+  }
+  
+  function safeHost(u){ 
+    try{ return new URL(u).hostname.replace(/^www\./,''); } catch { return ''; } 
+  }
+  
+  function postedLabel(it){ 
+    const raw=it.dateposted||it.datePosted||it._createdDate||it.posted_at; 
+    if(!raw)return''; 
+    const d=new Date(raw); 
+    if(isNaN(d))return''; 
+    const host=safeHost(jobUrl(it)); 
+    return `${'Posted '+formatAgo(d)}${host?' • '+host:''}`; 
+  }
+  
+  function fmtSalaryRange(min,max){ 
+    const pos=n=>typeof n==='number'&&isFinite(n)&&n>0; 
+    if(!pos(min)&&!pos(max))return''; 
+    const fk=n=>'$'+Math.round(n/1000)+'k'; 
+    if(pos(min)&&pos(max)&&min!==max)return`${fk(min)} – ${fk(max)}`; 
+    const n=pos(min)?min:max; 
+    return fk(n); 
+  }
+  
+  function renderedSalary(it){ 
+    if(typeof it.salary==='string' && it.salary.trim() && !/^\$?\s*0/.test(it.salary)) return it.salary.trim(); 
+    const min=Number(it.salaryMin ?? it.salarymin), max=Number(it.salaryMax ?? it.salarymax); 
+    const range=(isFinite(min)||isFinite(max))?fmtSalaryRange(min,max):''; 
+    return range || '—'; 
+  }
+  
+  function detectWorkMode(it){ 
+    const explicit=(it.workMode||'').toLowerCase(); 
+    if(explicit) return explicit; 
+    const t=`${it.title||''} ${it.location||''}`.toLowerCase(); 
+    if(/\bhybrid\b/.test(t))return'hybrid'; 
+    if(/\b(remote|anywhere|wfh)\b/.test(t))return'remote'; 
+    if(/\b(on[-\s]?site|in[-\s]?office)\b/.test(t))return'onsite'; 
+    return''; 
+  }
+  
+  function modeLabel(it){ 
+    const m=detectWorkMode(it); 
+    return m ? m.charAt(0).toUpperCase()+m.slice(1) : ''; 
+  }
+
+  function unwrapUrl(u=''){
+    try{
+      const url = new URL(u);
+      const params = url.searchParams;
+      const candidates = [ params.get('r'), params.get('u'), params.get('url'), ...Array.from(params.values()) ].filter(Boolean);
+      for (const c of candidates) {
+        const decoded = decodeURIComponent(c);
+        const ix = decoded.indexOf('http');
+        if (ix >= 0) return decoded.slice(ix);
+      }
+      return u;
+    }catch{ return u; }
+  }
+  
+  const jobUrl = (it={}) =>
+    unwrapUrl(
+      it.jobUrl || it.url || it.link ||
+      it.job_url || it.jobLink || it.job_link ||
+      it.applicationUrl || it.apply_url || it.applyUrl ||
+      it.redirect_url || it.redirectUrl ||
+      it.source_url || it.sourceUrl || ''
+    );
+
+  function normalizeItem(raw = {}) {
+    const n = { ...raw };
+    n.title   = n.title   || n.jobTitle || n.position || '';
+    n.company = n.company || n.employer || n.org || '';
+    n.url = jobUrl(n);
+    n.description_snippet =
+      n.description_snippet || n.snippet || n.description || n.summary || n.jobDescription || n.details || n.desc || '';
+    n.posted_at = n.posted_at || n.datePosted || n.dateposted || n.date || n._createdDate || '';
+    if (!n.location && (n.city || n.state || n.country)) n.location = [n.city, n.state, n.country].filter(Boolean).join(', ');
+    n.workMode = n.workMode || n.remote || n.mode || '';
+    if (n.salary == null && (n.min_salary || n.max_salary)) { n.salaryMin = Number(n.min_salary); n.salaryMax = Number(n.max_salary); }
+    n.source = n.source || (n.sourceDomain ? n.sourceDomain.replace(/^www\./,'') : (n.bing ? 'bing' : ''));
+    if (raw.jobCategory && !n.jobCategory) n.jobCategory = raw.jobCategory;
+    return n;
+  }
+
+  const STOP=new Set(('a an the and or of to in on for with by at from is are be as this that it you your our we they he she them their professional summary summary objective contact phone email address education experience work key projects projects profiles profile about skills core competencies interests hobbies'.split(' ')));
+  const toks = s => (String(s||'').toLowerCase().match(/[a-z0-9+#.\-]{2,}/g)||[]).filter(w=>!STOP.has(w));
+  const setify = arr => new Set((arr||[]).map(x=>String(x).toLowerCase()));
+  
+  function jobWords(it){ 
+    const parts=[it.title||'', it.company||'', it.location||'', it.description||it.description_snippet||'']; 
+    return setify(toks(parts.join(' '))); 
+  }
+  
+  function recencyScore(it){ 
+    const d=it.dateposted||it.datePosted||it._createdDate||it.posted_at; 
+    if(!d)return .4; 
+    const days=Math.max(0,(Date.now()-new Date(d).getTime())/86400000); 
+    return days<=1?1:days>=30?.1:1-(days/30)*.9; 
+  }
+  
+  function matchScore(job, kw){
+    const jw = jobWords(job);
+    const ks = setify(toks(kw));
+    const candSkills = setify(CAND.skills || []);
+    let kwMatches = 0; for (const tok of jw) if (ks.has(tok)) kwMatches++;
+    let skillMatches = 0; for (const tok of jw) if (candSkills.has(tok)) skillMatches++;
+    let score = jw.size>0 ? ((kwMatches + skillMatches) / jw.size) * 100 : 0;
+    score += recencyScore(job) * 10;
+    return Math.min(score, 100) / 100;
+  }
+  
+  function pctBadgeHTML(score){ 
+    const pct=Math.round(Math.max(0,Math.min(1,score))*100); 
+    let cls='low'; 
+    if(pct>=80)cls='good'; 
+    else if(pct>=60)cls='medium'; 
+    return `<span class="match-badge ${cls}">${pct}% match</span>`; 
+  }
+
+  const seen = new Set();
+  const keyOf = it => [it.title||'', it.company||'', it.location||'', jobUrl(it)||''].join('|').toLowerCase();
+
+  /* ===== SUPABASE ===== */
+  async function loadJobsFromSupabase({ limit = 50, offset = 0, level = '' } = {}) {
+    try {
+      let url = `${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}?select=*&limit=${limit}&offset=${offset}`;
+      
+      if (level === 'entry') {
+        url += `&jobCategory=eq.entry`;
+      } else if (level === 'professional') {
+        url += `&jobCategory=eq.professional`;
+      }
+      
+      const res = await fetch(url, {
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+        }
+      });
+      
+      if (!res.ok) {
+        console.error('Supabase fetch failed:', res.status);
+        return [];
+      }
+      
+      const data = await res.json();
+      if (data.length < limit) supabaseExhausted = true;
+      return (data || []).map(normalizeItem);
+    } catch (e) {
+      console.error('Supabase error:', e);
+      return [];
+    }
+  }
+
+  /* ===== RENDER ===== */
+  function render(list, totalFiltered = 0){
+    grid.innerHTML='';
+    if (!list.length){ 
+      grid.innerHTML = '<p class="empty">No jobs found. Try adjusting your filters or searching the web.</p>'; 
+      loadMoreWrap.style.display='none';
+      notifyHeight();
+      return; 
+    }
+    
+    for (const it of list){
+      const a = document.createElement('article'); 
+      a.className='card';
+      const score = matchScore(it, kwInput.value || '');
+      
+      a.innerHTML = `
+        <h3 class="title">${esc(it.title||'Untitled role')}</h3>
+        <p class="meta">${esc(it.company||'')}${it.company && it.source ? ' • ' : ''}${esc(it.source||'')}</p>
+        <div class="row">
+          <span class="salary">
+            ${esc(renderedSalary(it))}
+            ${(() => { const m=modeLabel(it); return m ? `<span class="pill" style="margin-left:8px">${esc(m)}</span>` : '' })()}
+          </span>
+          <span class="meta" title="${esc(fmtDate(it.dateposted||it.datePosted||it._createdDate||it.posted_at))}">${esc(postedLabel(it))}</span>
+        </div>
+        <div class="row" style="margin-top:10px">
+          ${it.url ? `<a class="btn" href="${esc(it.url)}" target="_blank" rel="noopener">View Job</a>` : '<span class="meta">No link</span>'}
+          ${pctBadgeHTML(score)}
+          ${it.jobCategory ? `<span class="pill" style="margin-left:8px">${esc(it.jobCategory === 'entry' ? 'Entry' : 'Professional')}</span>` : ''}
+          <button class="btn btn-preview" style="margin-left:auto">Preview</button>
+        </div>
+        ${it.description || it.description_snippet ? `<div class="meta" style="margin-top:8px">${esc(String(it.description||it.description_snippet).slice(0,220))}${(String(it.description||it.description_snippet).length>220)?'…':''}</div>`:''}
+      `;
+      
+      a.addEventListener('click', e => {
+        if (e.target.closest('a.btn')) return;
+        if (e.target.classList.contains('btn-preview')) { openDrawer(it); return; }
+        openDrawer(it);
+      });
+      grid.appendChild(a);
+    }
+
+    // Show Load More if there are more pages
+    const limit = currentLimit();
+    const hasMore = (page * limit < totalFiltered) || !supabaseExhausted;
+    loadMoreWrap.style.display = hasMore ? 'block' : 'none';
+    
+    // Update button text with page info
+    if (totalFiltered > 0) {
+      const showing = Math.min(page * limit, totalFiltered);
+      loadMoreBtn.textContent = `Load More (${showing} of ${totalFiltered})`;
+    } else {
+      loadMoreBtn.textContent = 'Load More';
+    }
+
+    if (list.length > 0 && resumeText && !localStorage.getItem(GUIDE_DISMISSED_KEY)) jobGuide.style.display = 'block';
+    
+    // Notify parent iframe of height change
+    setTimeout(notifyHeight, 100);
+  }
+
+  /* ===== FILTER ===== */
+  function applyFilter(){
+    const kw   = kwInput.value.trim();
+    const mode = (modeSelect?.value || '').toLowerCase();
+    const minS = Number(minSalaryInput?.value || 0) || 0;
+    const category = (categorySelect?.value || '').toLowerCase();
+
+    localStorage.setItem(KW_KEY, kw);
+
+    const meetsMode = (it) => {
+      if (!mode) return true;
+      const m = (detectWorkMode(it) || '').toLowerCase();
+      return m === mode;
+    };
+
+    const meetsSalary = (it) => {
+      const min = Number(it.salaryMin ?? it.salarymin);
+      const max = Number(it.salaryMax ?? it.salarymax);
+      if (Number.isFinite(min) || Number.isFinite(max)) {
+        const best = Number.isFinite(max) ? max : min;
+        return Number.isFinite(best) ? best >= minS : true;
+      }
+      return true;
+    };
+
+    const meetsCategory = (it) => {
+      if (!category) return true;
+      const c = String(it.jobCategory || '').toLowerCase();
+      return c === category;
+    };
+
+    const MIN_MATCH_THRESHOLD = kw ? 0.30 : 0.00;
+
+    // Filter and score all items
+    const filtered = allItems
+      .filter(it => meetsMode(it) && meetsSalary(it) && meetsCategory(it))
+      .map(j => ({ j, s: matchScore(j, kw) }))
+      .filter(x => x.s >= MIN_MATCH_THRESHOLD)
+      .sort((a,b)=> b.s - a.s);
+
+    // FIXED: Show only current page (not cumulative)
+    const limit = currentLimit();
+    const start = (page - 1) * limit;
+    const end = start + limit;
+    viewItems = filtered.slice(start, end).map(x => x.j);
+
+    render(viewItems, filtered.length);
+  }
+
+  /* ===== DRAWER ===== */
+  function openDrawer(it){
+    selectedJob = it;
+    dTitle.textContent = it.title || 'Job';
+    dMeta.textContent  = [it.company, it.location, modeLabel(it)].filter(Boolean).join(' • ');
+    dView.href = it.url || '#';
+
+    const desc = it.description || it.description_snippet || it.snippet || it.summary || it.jobDescription || it.details || it.desc || '';
+    dDesc.textContent = (desc && String(desc).trim()) ? String(desc).trim() : 'Open Job to read the full description.';
+    detail.style.display = 'block';
+    requestAnimationFrame(() => detail.scrollTop = 0);
+  }
+  dClose.addEventListener('click', () => detail.style.display = 'none');
+
+  /* ===== TAILOR RESUME (CLIENT-SIDE) ===== */
+  function extractContactInfo(resumeText) {
+    const lines = resumeText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const phoneMatch = resumeText.match(/\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/);
+    const phone = phoneMatch ? phoneMatch[0] : '';
+    const emailMatch = resumeText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+    const email = emailMatch ? emailMatch[0] : '';
+    const linkedinMatch = resumeText.match(/linkedin\.com\/in\/[a-zA-Z0-9-]+/i);
+    const linkedin = linkedinMatch ? linkedinMatch[0] : '';
+    let location = '';
+    for (let i = 0; i < Math.min(10, lines.length); i++) {
+      const line = lines[i];
+      if (/^[A-Z][a-zA-Z\s]+,\s*[A-Z]{2}$/.test(line) || /^[A-Z][a-zA-Z\s]+,\s*[A-Z][a-zA-Z\s]+$/.test(line)) { location = line; break; }
+    }
+    return { phone, email, linkedin, location };
+  }
+
+  function inferCandidateName(resumeText){
+    const lines = resumeText.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    const blacklist = /^(professional summary|summary|objective|profile|about|contact|education|experience|work experience|key projects|skills|core competencies)\b/i;
+    for (let i=0;i<Math.min(8,lines.length);i++){
+      const L = lines[i];
+      if (blacklist.test(L)) continue;
+      if (/@|http|linkedin|github|phone|email|address|\|/i.test(L)) continue;
+      const words = L.split(/\s+/);
+      if (words.length>=2 && words.length<=5 && /^[A-Za-z][A-Za-z''-]*(\s+[A-Za-z][A-Za-z''-]*){1,4}$/.test(L)) return L;
+    }
+    return '[Your Name]';
+  }
+
+  function extractYears(resumeText){
+    const m = resumeText.match(/(\d+)\+?\s*years?\s*(?:of)?\s*(?:experience|professional)/i);
+    return m ? m[1] : 'seven';
+  }
+
+  function extractQuantifiedWins(resumeText){
+    const wins = [];
+    const bulletPattern = /^[•\-\*\u2022]\s*([A-Z][^.\n]{50,250}\.)/gmi;
+    const bullets = resumeText.match(bulletPattern) || [];
+    for (const bullet of bullets) {
+      const cleaned = bullet.replace(/^[•\-\*\u2022]\s*/, '').trim();
+      if (cleaned.length >= 50 && cleaned.length <= 200 && !wins.includes(cleaned)) {
+        wins.push(cleaned);
+        if (wins.length >= 3) break;
+      }
+    }
+    if (wins.length < 3) {
+      const achievementPattern = /(Managed|Led|Developed|Coordinated|Implemented|Achieved|Reduced|Increased|Supervised|Facilitated|Created|Built|Migrated|Optimized|Directed|Spearheaded|Collaborated|Designed|Established)[^.]{40,200}\./g;
+      const achievements = resumeText.match(achievementPattern) || [];
+      for (const achievement of achievements) {
+        const cleaned = achievement.trim();
+        if (cleaned.length >= 50 && !wins.includes(cleaned)) {
+          wins.push(cleaned);
+          if (wins.length >= 3) break;
+        }
+      }
+    }
+    while (wins.length < 3) wins.push('Delivered complex initiatives on time and within budget.');
+    return wins.slice(0, 3);
+  }
+
+  function buildCoverLetter(resumeText, job) {
+    const candidateName = inferCandidateName(resumeText);
+    const contact = extractContactInfo(resumeText);
+    const years = extractYears(resumeText);
+    const jobTitle = job.title || 'the position';
+    const company = job.company || 'your organization';
+    const wins = extractQuantifiedWins(resumeText);
+    const today = new Date();
+    const dateStr = `${today.getMonth() + 1}/${today.getDate()}/${today.getFullYear()}`;
+    const contactLines = [];
+    if (contact.location) contactLines.push(contact.location);
+    if (contact.phone) contactLines.push(contact.phone);
+    if (contact.email) contactLines.push(contact.email);
+    if (contact.linkedin) contactLines.push(contact.linkedin);
+    return [
+      contactLines.join('\n'),
+      '',
+      dateStr,
+      '',
+      'Hiring Committee',
+      company,
+      '',
+      `Re: Application for ${jobTitle}`,
+      '',
+      'Dear Hiring Committee,',
+      '',
+      `Thank you for considering my application for the ${jobTitle} position at ${company}. I am excited about the opportunity to apply my operations leadership, project management, and client engagement experience to support ${company}'s mission. With over ${years} years of experience managing cross-functional teams, streamlining operations, and delivering high-quality results across consulting, healthcare, and technology sectors, I am confident I can contribute immediate value to your team.`,
+      '',
+      'In my career, I have consistently combined operations management with process improvement. ' + wins.slice(0, 3).map(w => w.trim()).join(' '),
+      '',
+      `These experiences give me a balanced skill set in project coordination, operations, and execution—all areas that support ${company}'s continued growth. I am particularly drawn to ${company} and would be eager to apply my background to help strengthen both internal operations and customer-facing initiatives.`,
+      '',
+      `I would welcome the opportunity to discuss how my skills align with ${company}'s needs. Thank you for your time and consideration, and I look forward to the chance to contribute to ${company}'s success.`,
+      '',
+      'Sincerely,',
+      candidateName
+    ].join('\n');
+  }
+
+  function extractResumeSections(text) {
+    const sections = {};
+    const lines = text.split(/\r?\n/);
+    const sectionHeaders = {
+      summary: /^(professional\s+summary|summary|objective|profile)/i,
+      competencies: /^(core\s+competencies|key\s+skills|competencies)/i,
+      certifications: /^(certifications?)/i,
+      experience: /^(professional\s+experience|experience|work\s+experience|employment)/i,
+      projects: /^(key\s+projects|projects|notable\s+projects)/i,
+      skills: /^(technical\s+skills|skills|tools)/i,
+      education: /^(education|academic)/i
+    };
+    let currentSection = null;
+    let currentContent = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      let foundSection = null;
+      for (const [key, pattern] of Object.entries(sectionHeaders)) {
+        if (pattern.test(line)) { foundSection = key; break; }
+      }
+      if (foundSection) {
+        if (currentSection && currentContent.length > 0) sections[currentSection] = currentContent.join('\n').trim();
+        currentSection = foundSection;
+        currentContent = [];
+      } else if (currentSection) {
+        if (line) currentContent.push(line);
+        else if (currentContent.length > 0) currentContent.push('');
+      }
+    }
+    if (currentSection && currentContent.length > 0) sections[currentSection] = currentContent.join('\n').trim();
+    return sections;
+  }
+
+  function triggerDownload(blob, filename) {
+   const url = URL.createObjectURL(blob);
+   const a = document.createElement('a');
+   a.href = url;
+   a.download = filename;      // <– tells the browser to download
+   document.body.appendChild(a);
+   a.click();
+   document.body.removeChild(a);
+   setTimeout(() => URL.revokeObjectURL(url), 2000);
+ }
+
+  async function downloadResumeFiles(resumeText, job){
+    try{
+      const companyName = (job.company || 'Tailored').replace(/[^a-zA-Z0-9]/g, '_');
+      const resumeFileName = `Resume_${companyName}.txt`;
+      const coverFileName  = `CoverLetter_${companyName}.txt`;
+      const coverLetterText = buildCoverLetter(resumeText, job);
+      
+      // Format resume function
+      const formattedResume = (function formatResumeForJob(resumeText) {
+        const candidateName = inferCandidateName(resumeText);
+        const contact = extractContactInfo(resumeText);
+        let formatted = candidateName + '\n\n';
+        const contactParts = [];
+        if (contact.location) contactParts.push(contact.location);
+        if (contact.phone) contactParts.push(contact.phone);
+        if (contact.email) contactParts.push(contact.email);
+        if (contact.linkedin) contactParts.push(contact.linkedin);
+        formatted += contactParts.join(' | ') + '\n\n';
+        
+        const sections = extractResumeSections(resumeText);
+        if (sections.summary)       formatted += 'Professional Summary\n\n' + sections.summary + '\n\n';
+        if (sections.competencies)  formatted += 'Core Competencies\n\n' + sections.competencies + '\n\n';
+        if (sections.certifications)formatted += 'Certifications\n\n' + sections.certifications + '\n\n';
+        if (sections.experience)    formatted += 'Professional Experience\n\n' + sections.experience + '\n\n';
+        if (sections.projects)      formatted += 'Key Projects\n\n' + sections.projects + '\n\n';
+        if (sections.skills)        formatted += 'Technical Skills\n\n' + sections.skills + '\n\n';
+        if (sections.education)     formatted += 'Education\n\n' + sections.education + '\n\n';
+        
+        return formatted.trim();
+      })(resumeText);
+
+      // Create blobs and object URLs
+      const resumeBlob = new Blob([formattedResume], { type:'text/plain' });
+      const coverBlob = new Blob([coverLetterText], { type:'text/plain' });
+      const resumeUrl  = URL.createObjectURL(resumeBlob);
+      const coverUrl  = URL.createObjectURL(coverBlob);
+      
+      triggerDownload(resumeBlob, resumeFileName);
+      await new Promise(r => setTimeout(r, 1000));
+      triggerDownload(coverBlob, coverFileName);
+      
+      // Clean up object URLs after a delay
+      setTimeout(() => {
+        URL.revokeObjectURL(resumeUrl);
+        URL.revokeObjectURL(coverUrl);
+      }, 10000); // 10 seconds to ensure download completes
+      
+      return true;
+    }catch(err){
+      console.error('Download error:', err);
+      return false;
+    }
+  }
+
+// ===== SUBSCRIPTION CONFIGURATION =====
+const DOWNLOAD_LIMITS = {
+  'free': 4,                      // 1 per week = 4 per month
+  'ai business plan - free': 4,   // Same as free
+  'basic': 10,                    // 10 per month
+  'premium': -1                   // -1 = unlimited
+};
+
+// ===== SUBSCRIPTION TRACKING FUNCTIONS =====
+let currentWixUser = null;
+
+// Listen for user data from parent Wix site
+window.addEventListener('message', (event) => {
+  if (event.data.type === 'user') {
+    console.log('Received user data from parent:', event.data);
+    currentWixUser = {
+      id: event.data.email, // Using email as user ID since we have it
+      email: event.data.email,
+      subscriptionTier: event.data.tier
+    };
+    
+    // Update usage display when we get user info
+    initUsageDisplay();
+  }
+});
+
+async function getCurrentWixUser() {
+  return currentWixUser;
+}
+
+async function checkDownloadLimit(userId, email, subscriptionTier) {
+  try {
+    const tierKey = subscriptionTier.toLowerCase();
+    const userLimit = DOWNLOAD_LIMITS[tierKey] || DOWNLOAD_LIMITS['free'];
+    
+    console.log(`Checking limit for user ${userId}, tier: ${tierKey}, limit: ${userLimit}`);
+    
+    // Unlimited for premium
+    if (userLimit === -1) {
+      return { 
+        allowed: true, 
+        usage: { used: 0, limit: -1, remaining: -1 },
+        isPremium: true
+      };
+    }
+    
+    // Fetch current usage from Supabase
+    const response = await fetch(
+      `${SUPABASE_URL}/rest/v1/resume_downloads?user_id=eq.${encodeURIComponent(userId)}`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    if (!response.ok) {
+      console.error('Supabase error:', response.status);
+      // Fail CLOSED for free users
+      if (userLimit > 0) {
+        return { 
+          allowed: false, 
+          message: 'System temporarily unavailable. Please try again later.' 
+        };
+      } else {
+        return { allowed: true, usage: { used: 0, limit: -1, remaining: -1 } };
+      }
+    }
+    
+    const data = await response.json();
+    const currentDate = new Date();
+    const currentMonth = currentDate.getMonth();
+    const currentYear = currentDate.getFullYear();
+    
+    if (data.length > 0) {
+      const usage = data[0];
+      const lastResetDate = new Date(usage.last_reset_date);
+      const lastResetMonth = lastResetDate.getMonth();
+      const lastResetYear = lastResetDate.getFullYear();
+      
+      // Check if we need to reset for new month
+      if (currentMonth !== lastResetMonth || currentYear !== lastResetYear) {
+        await resetMonthlyUsage(userId);
+        return {
+          allowed: true,
+          usage: { used: 0, limit: userLimit, remaining: userLimit }
+        };
+      }
+      
+      // Check if over limit
+      const downloadsUsed = usage.downloads_used || 0;
+      const remaining = userLimit - downloadsUsed;
+      
+      if (downloadsUsed >= userLimit) {
+        return {
+          allowed: false,
+          message: `You've reached your monthly limit of ${userLimit} downloads. Upgrade to get more!`,
+          usage: { used: downloadsUsed, limit: userLimit, remaining: 0 }
+        };
+      }
+      
+      return {
+        allowed: true,
+        usage: { used: downloadsUsed, limit: userLimit, remaining: remaining }
+      };
+      
+    } else {
+      // First time user - create record
+      await createUsageRecord(userId, email, subscriptionTier);
+      return {
+        allowed: true,
+        usage: { used: 0, limit: userLimit, remaining: userLimit }
+      };
+    }
+    
+  } catch (error) {
+    console.error('Error checking download limit:', error);
+    const tierKey = subscriptionTier.toLowerCase();
+    const userLimit = DOWNLOAD_LIMITS[tierKey] || DOWNLOAD_LIMITS['free'];
+    
+    if (userLimit > 0) {
+      return { 
+        allowed: false, 
+        message: 'System error. Please try again later.' 
+      };
+    } else {
+      return { allowed: true, usage: { used: 0, limit: -1, remaining: -1 } };
+    }
+  }
+}
+
+async function createUsageRecord(userId, email, subscriptionTier) {
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/resume_downloads`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({
+        user_id: userId,
+        email: email,
+        subscription_tier: subscriptionTier,
+        downloads_used: 0,
+        last_reset_date: new Date().toISOString().split('T')[0]
+      })
+    });
+    
+    if (!response.ok) {
+      console.error('Failed to create usage record:', response.status);
+    }
+  } catch (error) {
+    console.error('Error creating usage record:', error);
+  }
+}
+
+async function incrementDownloadCount(userId) {
+  try {
+    // First, get current count
+    const response = await fetch(
+      `${SUPABASE_URL}/rest/v1/resume_downloads?user_id=eq.${encodeURIComponent(userId)}`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data.length > 0) {
+        const currentCount = data[0].downloads_used || 0;
+        
+        // Update with incremented count
+        const updateResponse = await fetch(
+          `${SUPABASE_URL}/rest/v1/resume_downloads?user_id=eq.${encodeURIComponent(userId)}`,
+          {
+            method: 'PATCH',
+            headers: {
+              'apikey': SUPABASE_ANON_KEY,
+              'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+              'Content-Type': 'application/json',
+              'Prefer': 'return=minimal'
+            },
+            body: JSON.stringify({
+              downloads_used: currentCount + 1,
+              updated_at: new Date().toISOString()
+            })
+          }
+        );
+        
+        if (!updateResponse.ok) {
+          console.error('Failed to increment download count:', updateResponse.status);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error incrementing download count:', error);
+  }
+}
+
+async function resetMonthlyUsage(userId) {
+  try {
+    const response = await fetch(
+      `${SUPABASE_URL}/rest/v1/resume_downloads?user_id=eq.${encodeURIComponent(userId)}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify({
+          downloads_used: 0,
+          last_reset_date: new Date().toISOString().split('T')[0],
+          updated_at: new Date().toISOString()
+        })
+      }
+    );
+    
+    if (!response.ok) {
+      console.error('Failed to reset monthly usage:', response.status);
+    }
+  } catch (error) {
+    console.error('Error resetting monthly usage:', error);
+  }
+}
+
+function displayUsageInfo(usage) {
+  // Find or create usage display element
+  let usageDisplay = document.getElementById('usage-display');
+  
+  if (!usageDisplay) {
+    usageDisplay = document.createElement('div');
+    usageDisplay.id = 'usage-display';
+    usageDisplay.style.cssText = `
+      padding: 12px;
+      margin: 10px 0;
+      background: rgba(255,255,255,0.08);
+      border-radius: 8px;
+      font-size: 13px;
+      text-align: center;
+    `;
+    
+    // Insert before the download button in the detail panel
+    const downloadButton = document.getElementById('dTailor');
+    if (downloadButton && downloadButton.parentNode) {
+      downloadButton.parentNode.insertBefore(usageDisplay, downloadButton);
+    }
+  }
+  
+  if (usage.limit === -1) {
+    usageDisplay.innerHTML = '✨ <strong>Premium:</strong> Unlimited downloads';
+  } else {
+    const percentage = (usage.used / usage.limit) * 100;
+    let emoji = '✅';
+    if (percentage >= 75) emoji = '⚠️';
+    if (usage.remaining === 0) emoji = '🚫';
+    
+    usageDisplay.innerHTML = `
+      ${emoji} <strong>Downloads this month:</strong> ${usage.used} / ${usage.limit} 
+      (${usage.remaining} remaining)
+    `;
+  }
+}
+
+// ===== INITIALIZATION: Show usage on page load =====
+async function initUsageDisplay() {
+  const user = await getCurrentWixUser();
+  if (user) {
+    const limitCheck = await checkDownloadLimit(user.id, user.email, user.subscriptionTier);
+    if (limitCheck.usage) {
+      displayUsageInfo(limitCheck.usage);
+    }
+  }
+}
+
+// ===== UPDATED dTailor EVENT HANDLER WITH SUBSCRIPTION GATING =====
+dTailor.addEventListener('click', async () => {
+  // Basic validation
+  if (!resumeText || !selectedJob) {
+    alert('Please upload a resume and select a job first.');
+    return;
+  }
+  
+  // Get current user from parent
+  const user = await getCurrentWixUser();
+  
+  if (!user) {
+    alert('Please log in to download tailored resumes.');
+    return;
+  }
+  
+  // Check download limit
+  const limitCheck = await checkDownloadLimit(user.id, user.email, user.subscriptionTier);
+  
+  if (!limitCheck.allowed) {
+    alert(limitCheck.message || 'You have reached your download limit.');
+    return;
+  }
+  
+  // Show usage info
+  if (limitCheck.usage) {
+    displayUsageInfo(limitCheck.usage);
+  }
+  
+  // Disable button during download
+  const originalText = dTailor.textContent;
+  dTailor.disabled = true;
+  dTailor.textContent = 'Generating...';
+  
+  try {
+    const email = (emailInput.value || '').trim();
+    const customDesc = document.getElementById('customJobDesc')?.value.trim();
+    const jobToUse = customDesc ? { ...selectedJob, description: customDesc } : selectedJob;
+    
+    // Your existing download logic
+    const ok = await downloadResumeFiles(resumeText, jobToUse);
+    
+    // After successful download, increment the counter
+    await incrementDownloadCount(user.id);
+    
+    // Update the display
+    if (limitCheck.usage && limitCheck.usage.limit !== -1) {
+      limitCheck.usage.used += 1;
+      limitCheck.usage.remaining -= 1;
+      displayUsageInfo(limitCheck.usage);
+    }
+    
+    // Your existing email logic - send to Wix backend
+    if (email) {
+      localStorage.setItem(EMAIL_KEY, email);
+      window.parent.postMessage({
+        type:'sendResume', 
+        to: email, 
+        subject:'Your tailored resume is ready!',
+        resumeText, 
+        job:{ 
+          title:selectedJob.title||'', 
+          company:selectedJob.company||'', 
+          url:selectedJob.url||'', 
+          description:selectedJob.description||selectedJob.description_snippet||'' 
+        }
+      }, '*');
+      alert(ok ? `Your resume is downloading. A copy was also emailed to ${email}.` : `Email sent to ${email}, but download failed.`);
+    } else {
+      alert(ok ? 'Your resume is downloading.' : 'Download failed. Please try again.');
+    }
+    
+  } catch (error) {
+    console.error('Download error:', error);
+    alert('Download failed. Please try again.');
+  } finally {
+    // Re-enable button
+    dTailor.disabled = false;
+    dTailor.textContent = originalText;
+  }
+});
+
+  /* ===== SEND TEST EMAIL (temporarily disabled) ===== */
+try {
+  const btn = document.getElementById('dSendTest');
+  if (btn) btn.style.display = 'none'; // hide the button until the API exists
+} catch {}
+
+
+  /* ===== WEB SCRAPER ===== */
+  async function fetchWithTimeout(url, options = {}, timeoutMS = FETCH_TIMEOUT_MS) {
+    const ctrl = new AbortController();
+    const id = setTimeout(() => ctrl.abort(), timeoutMS);
+    try {
+      const res = await fetch(url, { ...options, signal: ctrl.signal });
+      clearTimeout(id);
+      return res;
+    } catch (e) {
+      clearTimeout(id);
+      if (e.name === 'AbortError') throw new Error('Request timeout');
+      throw e;
+    }
+  }
+
+  async function safeJson(res) {
+    const txt = await res.text();
+    try {
+      return JSON.parse(txt);
+    } catch {
+      return { _nonJson: true, _text: txt.slice(0, 1000) };
+    }
+  }
+
+  async function callScrape(jobTitle, locationStr, remoteFlag) {
+    const payload = {
+      region: SCRAPER_REGION_DEFAULT,
+      location: (locationStr || '').trim() || 'United States',
+      remote: remoteFlag ? 'remote' : 'office',
+      job: (jobTitle || '').trim()
+    };
+    
+    let attempt = 0, lastErr;
+    while (attempt <= FETCH_RETRY) {
+      try {
+        const res = await fetchWithTimeout(SCRAPE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        
+        if (!res.ok) throw new Error(`Scrape failed ${res.status}`);
+        const json = await safeJson(res);
+        if (json._nonJson) throw new Error('Scraper returned non-JSON');
+        const items = Array.isArray(json.jobs) ? json.jobs : Array.isArray(json.items) ? json.items : [];
+        return items.map(normalizeItem);
+      } catch (e) {
+        lastErr = e;
+        attempt++;
+        if (attempt > FETCH_RETRY) throw lastErr;
+      }
+    }
+  }
+
+  async function callScrapeFromFile(file, params = {}) {
+    const fd = new FormData();
+    fd.append('resume', file);
+    const url = new URL(SCRAPE_FROM_FILE_URL);
+    url.searchParams.set('region', params.region || SCRAPER_REGION_DEFAULT);
+    url.searchParams.set('location', params.location || 'United States');
+    url.searchParams.set('remote', params.remote || 'remote');
+    
+    let attempt = 0, lastErr;
+    while (attempt <= FETCH_RETRY) {
+      try {
+        const res = await fetchWithTimeout(url.toString(), { method: 'POST', body: fd });
+        if (!res.ok) throw new Error(`Scrape-from-file failed ${res.status}`);
+        const json = await safeJson(res);
+        if (json._nonJson) throw new Error('Scrape-from-file returned non-JSON');
+        if (json.job_title) {
+          lastQuery = json.job_title;
+          kwInput.value = json.job_title;
+          localStorage.setItem(KW_KEY, json.job_title);
+        }
+        const items = Array.isArray(json.jobs) ? json.jobs : [];
+        return items.map(normalizeItem);
+      } catch (e) {
+        lastErr = e;
+        attempt++;
+        if (attempt > FETCH_RETRY) throw lastErr;
+      }
+    }
+  }
+
+  async function runBackendSearch() {
+    try {
+      lastQuery = kwInput.value || lastQuery;
+      lastLocation = locInput.value || lastLocation || 'United States';
+      lastRemote = remoteOnly.checked ? 'remote' : 'office';
+      searchBtn.disabled = true;
+      searchBtn.textContent = 'Searching...';
+
+      const items = await callScrape(lastQuery, lastLocation, lastRemote === 'remote');
+      for (const it of items) {
+        const k = keyOf(it);
+        if (!seen.has(k)) {
+          seen.add(k);
+          allItems.push(it);
+        }
+      }
+      firstRenderDone = true;
+      applyFilter();
+    } catch (e) {
+      console.error('Backend search error:', e);
+      alert('Search timed out or failed. Please try again.');
+    } finally {
+      searchBtn.disabled = false;
+      searchBtn.textContent = 'Search Web';
+    }
+  }
+
+  /* ===== RESUME UPLOAD ===== */
+  async function readFileText(file) {
+    const buf = await file.arrayBuffer();
+    const name = (file.name || '').toLowerCase();
+    
+    if (name.endsWith('.txt')) {
+      return new TextDecoder().decode(buf);
+    }
+    
+    if (name.endsWith('.docx') && window.mammoth) {
+      const { value } = await window.mammoth.extractRawText({ arrayBuffer: buf });
+      return value || '';
+    }
+    
+    if (name.endsWith('.odt') && window.JSZip) {
+      const zip = await JSZip.loadAsync(buf);
+      const entry = zip.file('content.xml');
+      if (!entry) return '';
+      const xml = await entry.async('string');
+      const doc = new DOMParser().parseFromString(xml, 'application/xml');
+      return (doc.documentElement.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    
+    if (name.endsWith('.pdf') && window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+      const pdf = await pdfjsLib.getDocument({ data: buf, useWorkerFetch: false, isEvalSupported: false, disableFontFace: true }).promise;
+      let text = '';
+      for (let p = 1; p <= pdf.numPages; p++) {
+        const page = await pdf.getPage(p);
+        const content = await page.getTextContent();
+        text += ' ' + content.items.map(i => i.str).join(' ');
+      }
+      return text.trim();
+    }
+    
+    return new TextDecoder().decode(buf);
+  }
+
+  function buildCandidateProfile(txt) {
+    const words = toks(txt);
+    const skills = Array.from(new Set(words)).slice(0, 80);
+    CAND = { titles: [], skills, seniority: 'mid' };
+    localStorage.setItem(CAND_KEY, JSON.stringify(CAND));
+    resumeText = txt;
+    localStorage.setItem(RESUME_TEXT_KEY, txt);
+  }
+
+  async function handleFiles(files) {
+    const f = files?.[0];
+    if (!f) return;
+    
+    statusEl.textContent = 'Extracting text…';
+    try {
+      const text = (await readFileText(f) || '').trim();
+      if (text.length < 30) {
+        statusEl.textContent = 'Could not read text. Try a different file.';
+        return;
+      }
+      
+      buildCandidateProfile(text);
+      resumeUploaded = true;
+      page = 1;
+      statusEl.textContent = 'Finding matches…';
+
+      const consent = document.getElementById('consent')?.checked ?? true;
+      parent.postMessage({ type: 'extractAndMatch', text, fileName: f.name || '', consent }, '*');
+
+      try {
+        const items = await callScrapeFromFile(f, {
+          region: SCRAPER_REGION_DEFAULT,
+          location: (locInput.value || 'United States'),
+          remote: remoteOnly.checked ? 'remote' : 'office'
+        });
+        for (const it of items) {
+          const k = keyOf(it);
+          if (!seen.has(k)) {
+            seen.add(k);
+            allItems.push(it);
+          }
+        }
+        firstRenderDone = true;
+        applyFilter();
+      } catch (e2) {
+        console.warn('scrape-from-file skipped', e2);
+      }
+
+      uploadGuide.style.display = 'none';
+    } catch (e) {
+      console.error(e);
+      statusEl.textContent = 'Extraction failed. Try a different file.';
+    }
+  }
+
+  up.addEventListener('dragover', e => { e.preventDefault(); up.classList.add('drag'); });
+  up.addEventListener('dragleave', () => up.classList.remove('drag'));
+  up.addEventListener('drop', e => { e.preventDefault(); up.classList.remove('drag'); handleFiles(e.dataTransfer.files); });
+  fileInput.addEventListener('change', e => handleFiles(e.target.files));
+
+  /* ===== EVENT LISTENERS ===== */
+  document.querySelectorAll('.guide-dismiss').forEach(el => {
+    el.addEventListener('click', function() {
+      this.parentElement.style.display = 'none';
+      localStorage.setItem(GUIDE_DISMISSED_KEY, 'true');
+      notifyHeight();
+    });
+  });
+
+  filterBtn.addEventListener('click', () => { page = 1; applyFilter(); });
+  
+  clearBtn.addEventListener('click', () => {
+    kwInput.value = '';
+    localStorage.removeItem(KW_KEY);
+    page = 1;
+    applyFilter();
+  });
+
+  kwInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      page = 1;
+      applyFilter();
+    }
+  });
+
+  locInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') runBackendSearch();
+  });
+
+  searchBtn.addEventListener('click', () => { page = 1; runBackendSearch(); });
+
+  categorySelect.addEventListener('change', async () => {
+    page = 1;
+    supabaseOffset = 0;
+    supabaseExhausted = false;
+    allItems = [];
+    seen.clear();
+    
+    const level = (categorySelect?.value || '').toLowerCase();
+    const supa = await loadJobsFromSupabase({ limit: SUPABASE_FETCH_LIMIT, offset: supabaseOffset, level });
+    supabaseOffset += SUPABASE_FETCH_LIMIT;
+    
+    for (const it of supa) {
+      const k = keyOf(it);
+      if (!seen.has(k)) {
+        seen.add(k);
+        allItems.push(it);
+      }
+    }
+    
+    applyFilter();
+  });
+
+  minSalaryInput.addEventListener('input', () => { page = 1; applyFilter(); });
+  modeSelect.addEventListener('change', () => { page = 1; applyFilter(); });
+
+  loadMoreBtn.addEventListener('click', async () => {
+    // FIXED: Instead of expanding, we paginate forward (replace current view)
+    loadMoreBtn.disabled = true;
+    loadMoreBtn.textContent = 'Loading...';
+    
+    const level = (categorySelect?.value || '').toLowerCase();
+    
+    // Fetch next batch if needed
+    if (allItems.length <= supabaseOffset && !supabaseExhausted) {
+      const next = await loadJobsFromSupabase({ limit: SUPABASE_FETCH_LIMIT, offset: supabaseOffset, level });
+      supabaseOffset += SUPABASE_FETCH_LIMIT;
+      for (const it of next) {
+        const k = keyOf(it);
+        if (!seen.has(k)) {
+          seen.add(k);
+          allItems.push(it);
+        }
+      }
+    }
+    
+    // Move to next page (replaces current view)
+    page += 1;
+    applyFilter();
+    
+    // Scroll to top of grid smoothly
+    grid.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    
+    loadMoreBtn.disabled = false;
+    loadMoreBtn.textContent = 'Load More';
+    
+    if (page * currentLimit() >= allItems.length && supabaseExhausted) {
+      loadMoreWrap.style.display = 'none';
+    }
+  });
+
+  emailInput.addEventListener('input', () => localStorage.setItem(EMAIL_KEY, emailInput.value.trim()));
+
+  /* ===== FIRST LOAD ===== */
+  setTimeout(async () => {
+    if (!firstRenderDone && allItems.length === 0) {
+      const level = (categorySelect?.value || '').toLowerCase();
+      const supa = await loadJobsFromSupabase({ limit: SUPABASE_FETCH_LIMIT, offset: supabaseOffset, level });
+      supabaseOffset += SUPABASE_FETCH_LIMIT;
+      
+      for (const it of supa) {
+        const k = keyOf(it);
+        if (!seen.has(k)) {
+          seen.add(k);
+          allItems.push(it);
+        }
+      }
+      
+      if (allItems.length > 0) {
+        firstRenderDone = true;
+        page = 1;
+        applyFilter();
+      }
+    }
+  }, 1200);
+  </script>
+</body>
+</html>
+
