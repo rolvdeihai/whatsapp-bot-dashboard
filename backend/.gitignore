@@ -25,3 +25,6 @@ yarn-error.log*
 
 /auth
 auth/
+
+session-backup.zip
+/.wwebjs_cache
