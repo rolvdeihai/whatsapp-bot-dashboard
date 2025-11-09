@@ -1,6 +1,6 @@
 // whatsapp-bot-dashboard/src/App.js
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import io from 'socket.io-client';
 import './App.css';
 
@@ -44,7 +44,7 @@ function App() {
   };
 
   // 🚀 Load saved groups
-  const loadSavedGroups = async () => {
+  const loadSavedGroups = useCallback(async () => {
     if (selectedGroups.length === 0) {
       setSavedGroups([]);
       return;
@@ -64,7 +64,14 @@ function App() {
     } catch (error) {
       console.error('Error loading saved groups:', error);
     }
-  };
+  }, [selectedGroups]); // Add dependencies that this function uses
+
+  // 🚀 Load saved groups when selection changes
+  useEffect(() => {
+    if (botStatus === 'connected' || botStatus === 'session_exists') {
+      loadSavedGroups();
+    }
+  }, [selectedGroups, botStatus, loadSavedGroups]); // Now include loadSavedGroups in dependencies
 
   // 🚀 Search groups
   const searchGroups = async () => {
