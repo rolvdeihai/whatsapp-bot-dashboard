@@ -19,6 +19,8 @@ jobs:
       NODE_ENV: ${{ secrets.NODE_ENV }}
       PORT: ${{ secrets.PORT }}
       API_ENDPOINT: ${{ secrets.API_ENDPOINT }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
 
     steps:
     - name: Checkout repository
