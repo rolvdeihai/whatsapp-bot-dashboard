@@ -132,13 +132,6 @@ function App() {
     return () => newSocket.close();
   }, []);
 
-  // 🚀 Load saved groups when selection changes
-  useEffect(() => {
-    if (botStatus === 'connected' || botStatus === 'session_exists') {
-      loadSavedGroups();
-    }
-  }, [selectedGroups, botStatus]);
-
   // 🚀 Initial session check
   useEffect(() => {
     const checkSessionStatus = async () => {

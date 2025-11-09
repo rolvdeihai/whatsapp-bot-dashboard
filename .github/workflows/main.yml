@@ -7,19 +7,19 @@ on:
       - 'backend/**'
   workflow_dispatch:
 
-env:
-  FRONTEND_URL: https://baby-ai.vercel.app/
-  NODE_ENV: production
-  PORT: 5000
-  API_ENDPOINT: https://fatmagician-baby-ai.hf.space
-
 jobs:
   deploy-and-run:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./backend
-    
+
+    env:
+      FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+      NODE_ENV: ${{ secrets.NODE_ENV }}
+      PORT: ${{ secrets.PORT }}
+      API_ENDPOINT: ${{ secrets.API_ENDPOINT }}
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -73,11 +73,12 @@ jobs:
     - name: Install dependencies
       run: npm ci
 
-    - name: Create production environment file
+    - name: Create .env file from secrets
       run: |
-        echo "PORT=5000" > .env
-        echo "NODE_ENV=production" >> .env
-        echo "API_ENDPOINT=https://fatmagician-baby-ai.hf.space" >> .env
+        echo "PORT=${PORT}" > .env
+        echo "NODE_ENV=${NODE_ENV}" >> .env
+        echo "API_ENDPOINT=${API_ENDPOINT}" >> .env
+        echo "FRONTEND_URL=${FRONTEND_URL}" >> .env
 
     - name: Setup ngrok with custom domain
       run: |
@@ -92,10 +93,7 @@ jobs:
         export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
         export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
         
-        # Start your bot (it will be accessible via the ngrok URL)
         npm start
-      env:
-        NGROK_URL: ${{ steps.ngrok.outputs.url }}
 
     - name: Upload session data
       if: always()
