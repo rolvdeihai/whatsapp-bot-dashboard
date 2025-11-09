@@ -79,6 +79,8 @@ jobs:
         echo "NODE_ENV=${NODE_ENV}" >> .env
         echo "API_ENDPOINT=${API_ENDPOINT}" >> .env
         echo "FRONTEND_URL=${FRONTEND_URL}" >> .env
+        echo "SUPABASE_URL=${SUPABASE_URL}" >> .env
+        echo "SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}" >> .env
 
     - name: Setup ngrok with custom domain
       run: |
