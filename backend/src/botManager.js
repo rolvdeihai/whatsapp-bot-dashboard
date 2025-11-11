@@ -851,14 +851,17 @@ class BotManager {
           const restored = await this.restoreSessionFromSupabase();
           if (restored) {
             console.log('Session restored from Supabase!');
-            // Double-check local session after restore
-            if (this.hasLocalSession()) {
-              console.log('Local session verified after restore');
-            } else {
+            
+            // ⭐ ADD THIS: Wait for session to stabilize
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            // ⭐ ADD THIS: Double-check session after restore
+            const finalCheck = this.hasLocalSession();
+            console.log(`Final session check after restore: ${finalCheck}`);
+            
+            if (!finalCheck) {
               console.log('WARNING: Session restore completed but local session still not detected');
             }
-          } else {
-            console.log('Failed to restore from Supabase, will require QR scan');
           }
         } else {
           console.log('No session found anywhere, will require QR scan');
