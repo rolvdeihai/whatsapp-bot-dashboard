@@ -27,3 +27,4 @@ yarn-error.log*
 
 /backend/auth/
 /backend/group_cache/
+/backend/.env
