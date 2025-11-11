@@ -54,21 +54,6 @@ const io = new Server(server, {
   }
 });
 
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile or curl)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      console.warn('Blocked CORS request from origin:', origin);
-      return callback(new Error('Not allowed by CORS'));
-    }
-  },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  credentials: true,
-}));
-
 // 🚀 CRITICAL FIX: Add JSON body parser middleware
 app.use(express.json());
 
