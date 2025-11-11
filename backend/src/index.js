@@ -24,19 +24,35 @@ dotenv.config();
 
 const app = express();
 const server = createServer(app);
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+
+    if (origin === "https://baby-ai.vercel.app") return callback(null, true);
+
+    if (origin === "http://localhost:3000") return callback(null, true);
+
+    if (/^https:\/\/[a-zA-Z0-9-]+-jethro-elijah-lims-projects\.vercel\.app$/.test(origin))
+      return callback(null, true);
+
+    if (/^https:\/\/.*\.ngrok-free\.dev$/.test(origin)) return callback(null, true);
+
+    return callback(new Error("CORS blocked: " + origin));
+  },
+  credentials: true,
+  methods: ["GET", "POST"],
+};
+
+app.use(cors(corsOptions));
+
 const io = new Server(server, {
   cors: {
-    origin: ['https://baby-ai.vercel.app', 'http://localhost:3000', 'https://whatsapp-bot-dashboard-dnakfvf8r-jethro-elijah-lims-projects.vercel.app/', 'https://arturo-nonclarified-chivalrously.ngrok-free.dev'],
-    methods: ['GET', 'POST'],
+    origin: corsOptions.origin,
+    methods: ["GET", "POST"],
     credentials: true
   }
 });
-
-// ✅ Allow both your deployed frontend and local dev frontend
-const allowedOrigins = [
-  'https://baby-ai.vercel.app',   // production frontend
-  'http://localhost:3000',        // local dev
-];
 
 app.use(cors({
   origin: (origin, callback) => {
