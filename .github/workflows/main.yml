@@ -6,10 +6,17 @@ on:
     paths:
       - 'backend/**'
   workflow_dispatch:
+  schedule:
+    # Run at 8:00 AM UTC (first 6-hour session)
+    - cron: '0 8 * * *'
+    # Run at 2:00 PM UTC (second 6-hour session)  
+    - cron: '0 14 * * *'
 
 jobs:
   deploy-and-run:
     runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours timeout for each session
+    
     defaults:
       run:
         working-directory: ./backend
@@ -97,6 +104,7 @@ jobs:
         export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
         export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
         
+        # Run the bot (it will automatically stop after 6 hours due to job timeout)
         npm start
 
     - name: Upload session data
