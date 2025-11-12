@@ -167,6 +167,11 @@ io.on('connection', (socket) => {
     console.log('Admin client disconnected:', socket.id);
     botManager.removeSocketConnection(socket);
   });
+
+  socket.on('force-retry', async () => {
+    console.log('Force retry connection requested by client');
+    await botManager.forceRetryConnection();
+  });
 });
 
 const PORT = process.env.PORT || 5000;

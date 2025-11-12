@@ -44,7 +44,14 @@ function App() {
   const retrySession = () => {
     if (!socket) return;
     console.log('Requesting session retry...');
-    socket.emit('retry-session');
+    
+    // Use different events based on current status
+    if (botStatus === 'session_exists' || botStatus === 'authenticating_with_session') {
+      socket.emit('force-retry');
+    } else {
+      socket.emit('retry-session');
+    }
+    
     setIsLoading(true);
   };
 
@@ -281,8 +288,23 @@ function App() {
         <section className="connection-section">
           <h2>Bot Connection</h2>
 
-          {/* 🆕 NEW: Session restoration controls */}
-          {(botStatus === 'session_retry' || botStatus === 'session_restore_failed') && (
+          {/* 🆕 ADD: Retry options for stuck auto-connection */}
+          {(botStatus === 'session_exists' || botStatus === 'authenticating_with_session') && (
+            <div className="session-controls">
+              <p>Auto-connection is taking longer than expected.</p>
+              <div className="button-group">
+                <button onClick={retrySession} className="btn btn-warning" disabled={isLoading}>
+                  {isLoading ? 'Retrying...' : 'Force Retry Connection'}
+                </button>
+                <button onClick={forceQR} className="btn btn-secondary">
+                  Use QR Code Instead
+                </button>
+              </div>
+            </div>
+          )}
+          
+          {/* 🆕 ADD: Retry options for other stuck states */}
+          {(botStatus === 'waiting_for_session' || botStatus === 'session_retry') && (
             <div className="session-controls">
               <p>Session restoration is taking longer than expected.</p>
               <div className="button-group">
@@ -293,16 +315,6 @@ function App() {
                   Use QR Code Instead
                 </button>
               </div>
-            </div>
-          )}
-          
-          {/* 🆕 NEW: QR code with session option */}
-          {botStatus === 'scan_qr' && canUseSession && (
-            <div className="qr-with-session">
-              <p>💡 <strong>Session Available!</strong> You can try using your saved session instead of scanning QR.</p>
-              <button onClick={retrySession} className="btn btn-warning" disabled={isLoading}>
-                {isLoading ? 'Trying Session...' : 'Use Saved Session Instead'}
-              </button>
             </div>
           )}
 
@@ -317,13 +329,13 @@ function App() {
               className="btn btn-primary"
             >
               {isLoading ? 'Loading...' : 
-               botStatus === 'connected' ? 'Connected' : 
-               botStatus === 'scan_qr' ? 'Scan QR Code' : 
-               botStatus === 'waiting_for_session' ? 'Restoring Session...' :
-               botStatus === 'authenticating_with_session' ? 'Authenticating...' :
-               botStatus === 'session_retry' ? 'Retrying Session...' :
-               botStatus === 'session_retry_after_qr' ? 'Retrying Authentication...' :
-               botStatus === 'session_exists' ? 'Auto-Connecting...' : 'Start Bot'}
+              botStatus === 'connected' ? 'Connected' : 
+              botStatus === 'scan_qr' ? 'Scan QR Code' : 
+              botStatus === 'waiting_for_session' ? 'Restoring Session...' :
+              botStatus === 'authenticating_with_session' ? 'Authenticating...' :
+              botStatus === 'session_retry' ? 'Retrying Session...' :
+              botStatus === 'session_retry_after_qr' ? 'Retrying Authentication...' :
+              botStatus === 'session_exists' ? 'Auto-Connecting...' : 'Start Bot'}
             </button>
             
             {botStatus === 'connected' && (

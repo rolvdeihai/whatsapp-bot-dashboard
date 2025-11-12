@@ -825,6 +825,46 @@ class BotManager {
     return true;
   }
 
+  async forceRetryConnection() {
+    console.log('Force retry connection requested...');
+    
+    // If we're stuck initializing, force stop and restart
+    if (this.isInitializing) {
+      console.log('Force stopping current initialization...');
+      
+      // Destroy client if it exists
+      if (this.client) {
+        try {
+          await this.client.destroy();
+          console.log('Client destroyed during force retry');
+        } catch (error) {
+          console.error('Error destroying client during force retry:', error);
+        }
+        this.client = null;
+      }
+      
+      // Reset initialization flags
+      this.isInitializing = false;
+      this.isWaitingForSession = false;
+      
+      // Clear any existing QR
+      this.currentQrCode = null;
+      
+      // Wait a moment then restart
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      console.log('Restarting bot after force retry...');
+      await this.initializeBot();
+      
+      return true;
+    }
+    
+    // If not initializing but stuck, just reinitialize
+    console.log('Bot not initializing - performing fresh start...');
+    await this.initializeBot();
+    return true;
+  }
+
   async downloadAndAssembleChunks(chunkPaths) {
     try {
       const chunks = [];
