@@ -104,7 +104,10 @@ jobs:
         export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
         export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
         
-        # Run the bot (it will automatically stop after 6 hours due to job timeout)
+        # Force new session in GitHub Actions
+        echo "Force new session in GitHub Actions"
+        rm -rf /tmp/whatsapp-auth/*
+        
         npm start
 
     - name: Upload session data
