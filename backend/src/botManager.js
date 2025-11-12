@@ -888,14 +888,37 @@ class BotManager {
   }
 
   async verifySessionStructure(sessionPath) {
-    const defaultPath = path.join(sessionPath, 'Default');
-    const hasCookies = fs.existsSync(path.join(defaultPath, 'Cookies'));
-    const hasLocalStorage = fs.existsSync(path.join(defaultPath, 'Local Storage'));
-    const hasIndexedDB = fs.existsSync(path.join(defaultPath, 'IndexedDB'));
+    try {
+      if (!fs.existsSync(sessionPath)) return false;
 
-    const isValid = hasCookies && hasLocalStorage && hasIndexedDB;
-    console.log(`Session verification: Cookies=${hasCookies}, LocalStorage=${hasLocalStorage}, IndexedDB=${hasIndexedDB}, Valid=${isValid}`);
-    return isValid;
+      const files = fs.readdirSync(sessionPath);
+      console.log('Restored session contents:', files);
+
+      // Check for essential directories
+      const hasDefaultDir = files.includes('Default');
+      const hasWwebjsFiles = files.some(f => f.includes('wwebjs'));
+      
+      if (hasDefaultDir) {
+        const defaultPath = path.join(sessionPath, 'Default');
+        const defaultFiles = fs.readdirSync(defaultPath);
+        console.log('Default directory contents:', defaultFiles);
+
+        // Check for critical browser files
+        const hasCookies = defaultFiles.includes('Cookies');
+        const hasLocalStorage = defaultFiles.some(f => f.includes('Local Storage'));
+        const hasIndexedDB = defaultFiles.some(f => f.includes('IndexedDB'));
+        
+        const isValid = hasCookies && (hasLocalStorage || hasIndexedDB);
+        console.log(`Session verification: Cookies=${hasCookies}, LocalStorage=${hasLocalStorage}, IndexedDB=${hasIndexedDB}, Valid=${isValid}`);
+        
+        return isValid;
+      }
+      
+      return hasWwebjsFiles;
+    } catch (error) {
+      console.error('Session verification failed:', error);
+      return false;
+    }
   }
 
   // Bot status
@@ -989,7 +1012,7 @@ class BotManager {
             '--no-zygote',
             '--single-process',
             '--disable-gpu',
-            `--user-data-dir=${this.authPath}/session-admin`,
+            `--user-data-dir=${this.authPath}`,
             '--enable-features=NetworkService,NetworkServiceInProcess'
           ],
         },
@@ -1029,10 +1052,10 @@ class BotManager {
         console.log('Session files:', files);
         
         // Check for WhatsApp-specific files
-        // const hasWwebjs = files.includes('wwebjs.session.json');
-        // const hasWwebjsBrowser = files.includes('wwebjs.browserid');
-        // console.log('Has wwebjs.session.json:', hasWwebjs);
-        // console.log('Has wwebjs.browserid:', hasWwebjsBrowser);
+        const hasWwebjs = files.includes('wwebjs.session.json');
+        const hasWwebjsBrowser = files.includes('wwebjs.browserid');
+        console.log('Has wwebjs.session.json:', hasWwebjs);
+        console.log('Has wwebjs.browserid:', hasWwebjsBrowser);
       }
       // If we're waiting for session and QR is generated, check if we should retry
       if (this.isWaitingForSession && !this.forceQR) {
