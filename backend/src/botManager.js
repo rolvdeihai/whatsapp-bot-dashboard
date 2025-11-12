@@ -750,6 +750,8 @@ class BotManager {
     
     this.isWaitingForSession = true;
     this.emitToAllSockets('bot-status', { status: 'waiting_for_session' });
+
+    await new Promise(resolve => setTimeout(resolve, 45000));
     
     for (let attempt = 1; attempt <= this.maxSessionRetries; attempt++) {
       console.log(`Session restoration attempt ${attempt}/${this.maxSessionRetries}`);
