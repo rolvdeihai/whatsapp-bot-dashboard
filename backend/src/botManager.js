@@ -24,7 +24,7 @@ class BotManager {
     // Use LocalAuth directory
     this.authPath = process.env.NODE_ENV === 'production' 
       ? '/tmp/whatsapp-auth' 
-      : path.join(__dirname, '../auth');
+      : path.join(process.cwd(), 'auth', 'session-admin');
     
     this.cacheDir = process.env.NODE_ENV === 'production'
       ? '/tmp/whatsapp-cache'
@@ -1012,6 +1012,8 @@ class BotManager {
             '--no-zygote',
             '--single-process',
             '--disable-gpu',
+            `--user-data-dir=${this.authPath}/session-admin`,
+            '--enable-features=NetworkService,NetworkServiceInProcess'
           ],
         },
         takeoverOnConflict: false,
