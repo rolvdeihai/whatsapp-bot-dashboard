@@ -134,6 +134,7 @@ app.get(/^(?!\/api).*/, (req, res) => {
 });
 
 // Socket.io for real-time communication
+// In your socket.io connection handler in index.js:
 io.on('connection', (socket) => {
   console.log('Admin client connected:', socket.id);
   
@@ -148,6 +149,18 @@ io.on('connection', (socket) => {
   socket.on('stop-bot', () => {
     console.log('Manual bot stop requested');
     botManager.stopBot();
+  });
+  
+  // 🆕 NEW: Force QR generation
+  socket.on('force-qr', () => {
+    console.log('Force QR requested by client');
+    botManager.forceQRGeneration();
+  });
+  
+  // 🆕 NEW: Retry session restoration
+  socket.on('retry-session', () => {
+    console.log('Session retry requested by client');
+    botManager.initializeBot(); // This will trigger session restoration again
   });
   
   socket.on('disconnect', () => {

@@ -57,6 +57,11 @@ class BotManager {
     this.groupCaches = new Map();
     this.maxCachedGroups = 5;
     this.maxCachedMessages = 30;
+
+    this.sessionRetryAttempts = 0;
+    this.maxSessionRetries = 3;
+    this.isWaitingForSession = false;
+    this.forceQR = false;
     
     this.startMemoryMonitoring();
     this.loadActiveGroupsFromDisk();
@@ -740,6 +745,86 @@ class BotManager {
     }
   }
 
+  async restoreSessionWithRetry() {
+    console.log('Starting session restoration with retry capability...');
+    
+    this.isWaitingForSession = true;
+    this.emitToAllSockets('bot-status', { status: 'waiting_for_session' });
+    
+    for (let attempt = 1; attempt <= this.maxSessionRetries; attempt++) {
+      console.log(`Session restoration attempt ${attempt}/${this.maxSessionRetries}`);
+      
+      try {
+        const restored = await this.restoreSessionFromSupabase();
+        
+        if (restored) {
+          console.log(`Session successfully restored on attempt ${attempt}`);
+          this.isWaitingForSession = false;
+          this.sessionRetryAttempts = 0;
+          return true;
+        }
+        
+        // If restoration failed, wait before retry
+        if (attempt < this.maxSessionRetries) {
+          console.log(`Session restoration failed, retrying in 10 seconds...`);
+          this.emitToAllSockets('bot-status', { 
+            status: 'session_retry', 
+            attempt: attempt,
+            maxAttempts: this.maxSessionRetries
+          });
+          
+          await new Promise(resolve => setTimeout(resolve, 10000));
+        }
+      } catch (error) {
+        console.error(`Session restoration attempt ${attempt} failed:`, error);
+        
+        if (attempt < this.maxSessionRetries) {
+          this.emitToAllSockets('bot-status', { 
+            status: 'session_retry', 
+            attempt: attempt,
+            maxAttempts: this.maxSessionRetries,
+            error: error.message
+          });
+          await new Promise(resolve => setTimeout(resolve, 10000));
+        }
+      }
+    }
+    
+    console.log('All session restoration attempts failed');
+    this.isWaitingForSession = false;
+    this.sessionRetryAttempts = 0;
+    this.emitToAllSockets('bot-status', { status: 'session_restore_failed' });
+    return false;
+  }
+
+  async forceQRGeneration() {
+    console.log('Force QR generation requested...');
+    this.forceQR = true;
+    
+    // Clear existing session
+    const sessionPath = path.join(this.authPath, 'session-admin');
+    if (fs.existsSync(sessionPath)) {
+      await fs.remove(sessionPath);
+      console.log('Session cleared for forced QR generation');
+    }
+    
+    // Stop current client
+    if (this.client) {
+      await this.client.destroy();
+      this.client = null;
+    }
+    
+    this.isInitializing = false;
+    this.isWaitingForSession = false;
+    
+    // Reinitialize to generate QR
+    setTimeout(() => {
+      this.initializeBot();
+    }, 2000);
+    
+    return true;
+  }
+
   async downloadAndAssembleChunks(chunkPaths) {
     try {
       const chunks = [];
@@ -841,40 +926,38 @@ class BotManager {
       const hasLocalSession = this.hasLocalSession();
       console.log(`Local session check: ${hasLocalSession}`);
       
-      if (!hasLocalSession) {
+      // If force QR is requested, skip session restoration
+      if (this.forceQR) {
+        console.log('Force QR mode - skipping session restoration');
+        this.forceQR = false; // Reset for next time
+      } else if (!hasLocalSession) {
         console.log('No local session found, checking Supabase...');
         const hasSupabaseSession = await this.hasSession();
         console.log(`Supabase session check: ${hasSupabaseSession}`);
         
         if (hasSupabaseSession) {
-          console.log('Attempting to restore complete session from Supabase...');
-          const restored = await this.restoreSessionFromSupabase();
+          // Use enhanced session restoration with retry
+          const restored = await this.restoreSessionWithRetry();
           if (restored) {
-            console.log('Session restored from Supabase!');
-            
-            // ⭐ ADD THIS: Wait for session to stabilize
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            
-            // ⭐ ADD THIS: Double-check session after restore
-            const finalCheck = this.hasLocalSession();
-            console.log(`Final session check after restore: ${finalCheck}`);
-            
-            if (!finalCheck) {
-              console.log('WARNING: Session restore completed but local session still not detected');
-            }
+            console.log('Session restored successfully, proceeding with authentication...');
+            this.emitToAllSockets('bot-status', { status: 'authenticating_with_session' });
+          } else {
+            console.log('Session restoration failed, will require QR scan');
+            this.emitToAllSockets('bot-status', { status: 'session_restore_failed' });
           }
         } else {
           console.log('No session found anywhere, will require QR scan');
         }
       } else {
         console.log('Using existing local session');
+        this.emitToAllSockets('bot-status', { status: 'authenticating_with_session' });
       }
       
-      // Create client with the (potentially restored) session
+      // Create client (will use session if available)
       this.client = new Client({
         authStrategy: new LocalAuth({
           clientId: 'admin',
-          dataPath: this.authPath // Use the full auth path, not subdirectory
+          dataPath: this.authPath
         }),
         puppeteer: {
           headless: true,
@@ -887,14 +970,12 @@ class BotManager {
             '--no-zygote',
             '--single-process',
             '--disable-gpu',
-            '--user-data-dir=' + path.join(this.authPath, 'session-admin') // Explicit user data dir
           ],
-          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
         },
         takeoverOnConflict: false,
-        takeoverTimeoutMs: 0,
-        restartOnAuthFail: true,
-        qrMaxRetries: 3,
+        takeoverTimeoutMs: 30000,
+        restartOnAuthFail: false,
+        qrMaxRetries: 2, // Reduced since we have our own retry logic
       });
 
       this.setupClientEvents();
@@ -904,6 +985,7 @@ class BotManager {
       console.error('Error initializing bot:', error);
       this.emitToAllSockets('bot-error', { error: error.message });
       this.isInitializing = false;
+      this.isWaitingForSession = false;
     }
   }
 
@@ -911,12 +993,54 @@ class BotManager {
   setupClientEvents() {
     if (!this.client) return;
 
+    let qrGenerated = false;
+    let sessionCheckAfterQR = false;
+
     this.client.on('qr', async (qr) => {
+      // If we're waiting for session and QR is generated, check if we should retry
+      if (this.isWaitingForSession && !this.forceQR) {
+        console.log('QR generated while waiting for session - checking if we should retry...');
+        
+        // One final session check before showing QR
+        const hasValidSession = this.hasLocalSession();
+        if (hasValidSession && this.sessionRetryAttempts < this.maxSessionRetries) {
+          console.log('Valid session found after QR - retrying authentication...');
+          this.sessionRetryAttempts++;
+          
+          this.emitToAllSockets('bot-status', { 
+            status: 'session_retry_after_qr',
+            attempt: this.sessionRetryAttempts,
+            maxAttempts: this.maxSessionRetries
+          });
+          
+          // Destroy and recreate client to force session usage
+          try {
+            await this.client.destroy();
+            this.client = null;
+            this.isInitializing = false;
+            
+            // Wait then reinitialize
+            setTimeout(() => {
+              this.initializeBot();
+            }, 5000);
+          } catch (error) {
+            console.error('Error during session retry:', error);
+          }
+          return;
+        }
+      }
+
+      // If we get here, show the QR code
+      console.log('QR code generated - scanning required');
+      qrGenerated = true;
+      
       try {
-        console.log('QR code generated - scanning required');
         const qrImage = await QRCode.toDataURL(qr);
         this.currentQrCode = qrImage;
-        this.emitToAllSockets('qr-code', { qr: qrImage });
+        this.emitToAllSockets('qr-code', { 
+          qr: qrImage,
+          canUseSession: this.hasLocalSession() && !this.forceQR
+        });
         this.emitToAllSockets('bot-status', { status: 'scan_qr' });
         console.log('QR code generated and sent to frontend');
       } catch (error) {
@@ -925,40 +1049,43 @@ class BotManager {
       }
     });
 
-    this.client.on('ready', async () => {
-      console.log('Bot connected successfully with LocalAuth');
-      this.emitToAllSockets('bot-status', { status: 'connected' });
-      this.isInitializing = false;
+    this.client.on('loading_screen', (percent, message) => {
+      console.log(`Loading Screen: ${percent}% - ${message}`);
       
-      // Sync session to Supabase after connection
-      setTimeout(async () => {
-        try {
-          const syncSuccess = await this.syncSessionToSupabase();
-          if (syncSuccess) {
-            console.log('Session successfully synced to Supabase');
-          } else {
-            console.log('Session sync to Supabase failed, but local session is active');
-          }
-        } catch (syncError) {
-          console.error('Session sync error:', syncError);
-        }
-      }, 3000);
-      
-      // Pre-load groups
-      setTimeout(async () => {
-        console.log('Pre-loading groups cache in background...');
-        try {
-          await this.getGroups(true);
-          console.log('Groups cache pre-loaded successfully');
-        } catch (error) {
-          console.error('Background groups pre-load failed:', error);
-        }
-      }, 2000);
+      // If we have a valid session and loading is happening, we're authenticating
+      if (this.hasLocalSession() && percent > 0 && !qrGenerated) {
+        this.emitToAllSockets('bot-status', { status: 'authenticating_with_session' });
+      }
     });
 
     this.client.on('authenticated', () => {
       console.log('Bot authenticated with LocalAuth');
       this.emitToAllSockets('bot-status', { status: 'authenticated' });
+      this.forceQR = false; // Reset force QR flag
+    });
+
+    this.client.on('ready', async () => {
+      console.log('Bot connected successfully with LocalAuth');
+      this.emitToAllSockets('bot-status', { status: 'connected' });
+      this.isInitializing = false;
+      this.isWaitingForSession = false;
+      this.sessionRetryAttempts = 0;
+      this.forceQR = false;
+      
+      // Clear QR code
+      this.currentQrCode = null;
+      
+      // Sync session to Supabase
+      setTimeout(async () => {
+        try {
+          const syncSuccess = await this.syncSessionToSupabase();
+          if (syncSuccess) {
+            console.log('Session successfully synced to Supabase');
+          }
+        } catch (syncError) {
+          console.error('Session sync error:', syncError);
+        }
+      }, 5000);
     });
 
     this.client.on('auth_failure', (error) => {

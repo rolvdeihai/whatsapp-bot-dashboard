@@ -263,3 +263,88 @@
   border: 1px solid #ddd;
   border-radius: 8px;
 }
+
+/* Add to your existing App.css */
+
+.session-controls {
+  background: #fff3cd;
+  border: 1px solid #ffeaa7;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 15px;
+}
+
+.session-controls p {
+  margin: 0 0 10px 0;
+  color: #856404;
+}
+
+.qr-with-session {
+  background: #d1ecf1;
+  border: 1px solid #bee5eb;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 15px;
+}
+
+.qr-with-session p {
+  margin: 0 0 10px 0;
+  color: #0c5460;
+}
+
+.qr-options {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid #eee;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #007bff;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+
+.btn-link:hover {
+  color: #0056b3;
+}
+
+.session-option, .no-session {
+  font-size: 14px;
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 4px;
+}
+
+.session-option {
+  background: #f8f9fa;
+  border-left: 4px solid #28a745;
+}
+
+.no-session {
+  background: #f8f9fa;
+  border-left: 4px solid #6c757d;
+}
+
+.error-message {
+  background: #f8d7da;
+  color: #721c24;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+/* Status color variations */
+.status.waiting_for_session,
+.status.authenticating_with_session,
+.status.session_retry,
+.status.session_retry_after_qr {
+  color: #ffc107;
+}
+
+.status.session_restore_failed {
+  color: #dc3545;
+}

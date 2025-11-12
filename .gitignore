@@ -25,6 +25,6 @@ yarn-error.log*
 .vercel
 .env
 
-/backend/auth/
+/backend/auth/session-admin/
 /backend/group_cache/
 /backend/.env
