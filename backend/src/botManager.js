@@ -1015,7 +1015,7 @@ class BotManager {
           ],
         },
         takeoverOnConflict: false,
-        takeoverTimeoutMs: 45000,
+        takeoverTimeoutMs: 90000,
         restartOnAuthFail: false,
         qrMaxRetries: 2, // Reduced since we have our own retry logic
       });
@@ -1039,6 +1039,22 @@ class BotManager {
     let sessionCheckAfterQR = false;
 
     this.client.on('qr', async (qr) => {
+      console.log('🔍 DEBUG: QR generated, checking session state...');
+      console.log('Session exists:', this.hasLocalSession());
+      console.log('Session path:', path.join(this.authPath, 'session-admin'));
+      
+      // List session files to see what's actually there
+      const sessionPath = path.join(this.authPath, 'session-admin');
+      if (fs.existsSync(sessionPath)) {
+        const files = fs.readdirSync(sessionPath);
+        console.log('Session files:', files);
+        
+        // Check for WhatsApp-specific files
+        const hasWwebjs = files.includes('wwebjs.session.json');
+        const hasWwebjsBrowser = files.includes('wwebjs.browserid');
+        console.log('Has wwebjs.session.json:', hasWwebjs);
+        console.log('Has wwebjs.browserid:', hasWwebjsBrowser);
+      }
       // If we're waiting for session and QR is generated, check if we should retry
       if (this.isWaitingForSession && !this.forceQR) {
         console.log('QR generated while waiting for session - checking if we should retry...');
@@ -1094,16 +1110,17 @@ class BotManager {
     this.client.on('loading_screen', (percent, message) => {
       console.log(`Loading Screen: ${percent}% - ${message}`);
       
-      // If we have a valid session and loading is happening, we're authenticating
-      if (this.hasLocalSession() && percent > 0 && !qrGenerated) {
+      // ⭐ ADD THIS: If loading progresses with session, assume authentication is working
+      if (this.hasLocalSession() && percent > 10) {
+        console.log('Loading progressing with session - authentication likely successful');
         this.emitToAllSockets('bot-status', { status: 'authenticating_with_session' });
       }
     });
 
     this.client.on('authenticated', () => {
-      console.log('Bot authenticated with LocalAuth');
+      console.log('✅ Bot authenticated with LocalAuth');
       this.emitToAllSockets('bot-status', { status: 'authenticated' });
-      this.forceQR = false; // Reset force QR flag
+      this.forceQR = false;
     });
 
     this.client.on('ready', async () => {
@@ -1167,6 +1184,21 @@ class BotManager {
     this.client.on('message', async (message) => {
       await this.handleMessage(message);
     });
+
+    this.client.on('auth_failure', (error) => {
+      console.error('❌ Bot auth failed:', error);
+      this.emitToAllSockets('bot-status', { status: 'auth_failed' });
+      this.emitToAllSockets('bot-error', { error: 'Authentication failed: ' + error });
+      this.isInitializing = false;
+    });
+
+    const events = ['qr', 'authenticated', 'ready', 'auth_failure', 'disconnected', 'loading_screen'];
+    events.forEach(event => {
+      this.client.on(event, (...args) => {
+        console.log(`🔔 WhatsApp Event: ${event}`, args.length > 0 ? args[0] : '');
+      });
+    });
+
   }
 
   // Stop bot with cleanup
