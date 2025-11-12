@@ -1015,7 +1015,7 @@ class BotManager {
           ],
         },
         takeoverOnConflict: false,
-        takeoverTimeoutMs: 30000,
+        takeoverTimeoutMs: 45000,
         restartOnAuthFail: false,
         qrMaxRetries: 2, // Reduced since we have our own retry logic
       });
