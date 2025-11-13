@@ -14,21 +14,21 @@ class SupabaseSessionStorage {
   // =============================================
 
   /**
-   * Get session data by session ID - REQUIRED by RemoteAuth
+   * Session exists check - REQUIRED by RemoteAuth
    */
-  async get(sessionId) {
+  async sessionExists({ session }) {
     try {
-      console.log(`🔍 RemoteAuth GET session: ${sessionId}`);
+      console.log(`🔍 RemoteAuth sessionExists: ${session}`);
       
       const { data, error } = await this.supabase
         .from('whatsapp_sessions')
         .select('session_data')
-        .eq('session_id', sessionId)
+        .eq('session_id', session)
         .single();
 
       if (error || !data) {
-        console.log(`❌ Session not found: ${sessionId}`);
-        return null;
+        console.log(`❌ Session not found: ${session}`);
+        return false;
       }
 
       const sessionData = data.session_data;
@@ -36,113 +36,13 @@ class SupabaseSessionStorage {
       if (!sessionData || 
           (typeof sessionData === 'object' && Object.keys(sessionData).length === 0)) {
         console.log('🗑️ Empty session data found, deleting...');
-        await this.remove(sessionId);
-        return null;
+        await this.delete({ session });
+        return false;
       }
 
-      console.log(`✅ Session data retrieved for: ${sessionId}`);
-      return sessionData;
+      console.log(`✅ Session exists: ${session}`);
+      return true;
 
-    } catch (error) {
-      console.error('❌ Error in RemoteAuth get:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Save session data - REQUIRED by RemoteAuth
-   */
-  async set(sessionId, sessionData) {
-    try {
-      console.log(`💾 RemoteAuth SET session: ${sessionId}`);
-      
-      if (!sessionData || (typeof sessionData === 'object' && Object.keys(sessionData).length === 0)) {
-        console.log('⚠️ No valid data to save');
-        return;
-      }
-
-      const { error } = await this.supabase
-        .from('whatsapp_sessions')
-        .upsert({
-          session_id: sessionId,
-          session_data: sessionData,
-          updated_at: new Date().toISOString(),
-        }, {
-          onConflict: 'session_id'
-        });
-
-      if (error) {
-        console.error('❌ RemoteAuth set error:', error);
-        throw error;
-      }
-      
-      console.log(`✅ Session data saved via RemoteAuth: ${sessionId}`);
-        
-    } catch (error) {
-      console.error('❌ Error in RemoteAuth set:', error);
-    }
-  }
-
-  /**
-   * Delete session - REQUIRED by RemoteAuth
-   */
-  async remove(sessionId) {
-    try {
-      console.log(`🗑️ RemoteAuth REMOVE session: ${sessionId}`);
-      
-      const { error } = await this.supabase
-        .from('whatsapp_sessions')
-        .delete()
-        .eq('session_id', sessionId);
-
-      if (error) throw error;
-      console.log(`✅ Session deleted via RemoteAuth: ${sessionId}`);
-    } catch (error) {
-      console.error('❌ Error in RemoteAuth remove:', error);
-    }
-  }
-
-  /**
-   * List all sessions - REQUIRED by RemoteAuth
-   */
-  async list() {
-    try {
-      console.log('📋 RemoteAuth LIST sessions');
-      
-      const { data, error } = await this.supabase
-        .from('whatsapp_sessions')
-        .select('session_id, session_data');
-
-      if (error) {
-        console.error('❌ RemoteAuth list error:', error);
-        return [];
-      }
-
-      const sessions = data.map(row => ({
-        id: row.session_id,
-        session: row.session_data
-      }));
-
-      console.log(`✅ Found ${sessions.length} sessions via RemoteAuth`);
-      return sessions;
-
-    } catch (error) {
-      console.error('❌ Error in RemoteAuth list:', error);
-      return [];
-    }
-  }
-
-  // =============================================
-  // Legacy Methods (For Backward Compatibility)
-  // =============================================
-
-  /**
-   * Legacy method - checks if session exists
-   */
-  async sessionExists(session) {
-    try {
-      const sessionData = await this.get(session);
-      return sessionData !== null;
     } catch (error) {
       console.error('❌ Error in sessionExists:', error);
       return false;
@@ -150,24 +50,91 @@ class SupabaseSessionStorage {
   }
 
   /**
-   * Legacy method - extract session data
+   * Extract session data - REQUIRED by RemoteAuth
    */
-  async extract(session) {
-    return await this.get(session);
+  async extract({ session }) {
+    try {
+      console.log(`🔍 RemoteAuth extract: ${session}`);
+      
+      const { data, error } = await this.supabase
+        .from('whatsapp_sessions')
+        .select('session_data')
+        .eq('session_id', session)
+        .single();
+
+      if (error || !data) {
+        console.log(`❌ Session not found for extract: ${session}`);
+        return null;
+      }
+
+      const sessionData = data.session_data;
+      
+      if (!sessionData) {
+        return null;
+      }
+
+      console.log(`✅ Session data extracted for: ${session}`);
+      return sessionData;
+
+    } catch (error) {
+      console.error('❌ Error in extract:', error);
+      return null;
+    }
   }
 
   /**
-   * Legacy method - save session data with old signature
+   * Save session data - REQUIRED by RemoteAuth
    */
   async save({ session, data }) {
-    return await this.set(session, data);
+    try {
+      console.log(`💾 RemoteAuth save: ${session}`);
+      
+      if (!data) {
+        console.log('⚠️ No data to save');
+        return;
+      }
+
+      console.log(`📦 Saving session data type: ${typeof data}, size: ${JSON.stringify(data).length} chars`);
+
+      const { error } = await this.supabase
+        .from('whatsapp_sessions')
+        .upsert({
+          session_id: session,
+          session_data: data,
+          updated_at: new Date().toISOString(),
+        }, {
+          onConflict: 'session_id'
+        });
+
+      if (error) {
+        console.error('❌ RemoteAuth save error:', error);
+        throw error;
+      }
+      
+      console.log(`✅ Session data saved: ${session}`);
+        
+    } catch (error) {
+      console.error('❌ Error in save:', error);
+    }
   }
 
   /**
-   * Legacy method - delete session with old signature
+   * Delete session - REQUIRED by RemoteAuth
    */
   async delete({ session }) {
-    return await this.remove(session);
+    try {
+      console.log(`🗑️ RemoteAuth delete: ${session}`);
+      
+      const { error } = await this.supabase
+        .from('whatsapp_sessions')
+        .delete()
+        .eq('session_id', session);
+
+      if (error) throw error;
+      console.log(`✅ Session deleted: ${session}`);
+    } catch (error) {
+      console.error('❌ Error in delete:', error);
+    }
   }
 }
 

@@ -120,6 +120,23 @@ class BotManager {
     }
   }
 
+  // Add the missing hasLocalSession method
+  hasLocalSession() {
+    try {
+      const sessionPath = path.join(this.authPath, 'session-admin');
+      if (fs.existsSync(sessionPath)) {
+        const files = fs.readdirSync(sessionPath);
+        const hasSessionFiles = files.length > 0;
+        console.log(`Local session files: ${files.length} files`);
+        return hasSessionFiles;
+      }
+      return false;
+    } catch (error) {
+      console.error('Error checking local session:', error);
+      return false;
+    }
+  }
+
   // Quick group fetch with limits
   async getGroups() {
     try {
@@ -441,7 +458,7 @@ class BotManager {
   // Bot status
   getBotStatus() {
     if (this.client && this.client.info) return 'connected';
-    if (this.hasLocalSession() || this.hasSession()) return 'session_exists';
+    if (this.hasLocalSession()) return 'session_exists';
     return 'disconnected';
   }
 
@@ -482,61 +499,61 @@ class BotManager {
     try {
       console.log('Initializing bot with RemoteAuth and Supabase storage...');
       
-      // Create client with RemoteAuth
+      // Create client with RemoteAuth - FIXED session ID
       this.client = new Client({
         authStrategy: new RemoteAuth({
           clientId: 'admin',
           dataPath: this.authPath,
           store: this.store,
           backupSyncIntervalMs: 300000, // Sync every 5 minutes
-          puppeteer: {
-            headless: true,
-            args: [
-              '--no-sandbox',
-              '--disable-setuid-sandbox',
-              '--disable-dev-shm-usage',
-              '--disable-accelerated-2d-canvas',
-              '--no-first-run',
-              '--no-zygote',
-              '--single-process',
-              '--disable-gpu',
-              '--disable-features=VizDisplayCompositor',
-              '--disable-background-timer-throttling',
-              '--disable-backgrounding-occluded-windows',
-              '--disable-renderer-backgrounding',
-              '--disable-ipc-flooding-protection',
-              '--no-default-browser-check',
-              '--disable-default-apps',
-              '--disable-translate',
-              '--disable-extensions',
-              '--disable-component-extensions-with-background-pages',
-              '--disable-component-update',
-              '--disable-back-forward-cache',
-              '--disable-session-crashed-bubble',
-              '--disable-crash-reporter',
-              '--disable-plugins',
-              '--disable-plugins-discovery',
-              '--disable-pdf-tagging',
-              '--disable-partial-raster',
-              '--disable-skia-runtime-opts',
-              '--disable-logging',
-              '--disable-in-process-stack-traces',
-              '--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process',
-              '--use-gl=swiftshader',
-              '--enable-features=NetworkService,NetworkServiceInProcess',
-              '--aggressive-cache-discard',
-              '--max_old_space_size=512',
-              '--password-store=basic',
-              '--use-mock-keychain',
-            ],
-            ignoreDefaultArgs: [
-              '--disable-extensions',
-              '--enable-automation'
-            ],
-            timeout: 60000,
-            protocolTimeout: 60000,
-          },
         }),
+        puppeteer: {
+          headless: true,
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-gpu',
+            '--disable-features=VizDisplayCompositor',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-ipc-flooding-protection',
+            '--no-default-browser-check',
+            '--disable-default-apps',
+            '--disable-translate',
+            '--disable-extensions',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-component-update',
+            '--disable-back-forward-cache',
+            '--disable-session-crashed-bubble',
+            '--disable-crash-reporter',
+            '--disable-plugins',
+            '--disable-plugins-discovery',
+            '--disable-pdf-tagging',
+            '--disable-partial-raster',
+            '--disable-skia-runtime-opts',
+            '--disable-logging',
+            '--disable-in-process-stack-traces',
+            '--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process',
+            '--use-gl=swiftshader',
+            '--enable-features=NetworkService,NetworkServiceInProcess',
+            '--aggressive-cache-discard',
+            '--max_old_space_size=512',
+            '--password-store=basic',
+            '--use-mock-keychain',
+          ],
+          ignoreDefaultArgs: [
+            '--disable-extensions',
+            '--enable-automation'
+          ],
+          timeout: 60000,
+          protocolTimeout: 60000,
+        },
         takeoverOnConflict: false,
         takeoverTimeoutMs: 0,
         restartOnAuthFail: false,
@@ -568,8 +585,7 @@ class BotManager {
         const qrImage = await QRCode.toDataURL(qr);
         this.currentQrCode = qrImage;
         this.emitToAllSockets('qr-code', { 
-          qr: qrImage,
-          canUseSession: false // With RemoteAuth, we don't manually manage sessions
+          qr: qrImage
         });
         this.emitToAllSockets('bot-status', { status: 'scan_qr' });
         console.log('QR code generated and sent to frontend');
@@ -808,7 +824,7 @@ class BotManager {
         console.log('Local session cleared');
       }
       
-      await this.store.delete('admin');
+      await this.store.delete({ session: 'admin' });
       console.log('Supabase session cleared');
       
     } catch (error) {
