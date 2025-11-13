@@ -98,6 +98,12 @@ jobs:
       env:
         NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
 
+    - name: Restore cached session data
+      uses: actions/cache@v4
+      with:
+        path: backend/auth
+        key: whatsapp-session-cache
+
     - name: Start WhatsApp Bot
       run: |
         export NODE_OPTIONS="--max-old-space-size=512"

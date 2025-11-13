@@ -23,11 +23,11 @@ class BotManager {
     
     // Use LocalAuth directory
     this.authPath = process.env.NODE_ENV === 'production' 
-      ? '/tmp/whatsapp-auth' 
+      ? path.join(process.cwd(), 'auth')
       : path.join(__dirname, '../auth');
     
     this.cacheDir = process.env.NODE_ENV === 'production'
-      ? '/tmp/whatsapp-cache'
+      ? '/tmp/group_cache'
       : path.join(__dirname, '../group_cache');
     
     this.ensureDirectoryExists(this.authPath);
