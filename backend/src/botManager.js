@@ -1068,6 +1068,8 @@ class BotManager {
             '--enable-features=NetworkService,NetworkServiceInProcess',
             '--aggressive-cache-discard',
             '--max_old_space_size=512',
+            '--password-store=basic',
+            '--use-mock-keychain',
           ],
           ignoreDefaultArgs: [
             '--disable-extensions',
