@@ -13,6 +13,10 @@ import archiver from 'archiver';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const chromeProfileDir = '/tmp/chrome-profile-admin';
+await fs.remove(chromeProfileDir); // clean start each run
+await fs.ensureDir(chromeProfileDir);
+
 class BotManager {
   constructor() {
     this.client = null;
@@ -23,7 +27,7 @@ class BotManager {
     
     // Use LocalAuth directory
     this.authPath = process.env.NODE_ENV === 'production' 
-      ? path.join(process.cwd(), 'auth')
+      ? '/tmp/auth'
       : path.join(__dirname, '../auth');
     
     this.cacheDir = process.env.NODE_ENV === 'production'
@@ -1070,6 +1074,7 @@ class BotManager {
             '--max_old_space_size=512',
             '--password-store=basic',
             '--use-mock-keychain',
+            `--user-data-dir=${chromeProfileDir}`
           ],
           ignoreDefaultArgs: [
             '--disable-extensions',
