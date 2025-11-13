@@ -1074,7 +1074,6 @@ class BotManager {
             '--max_old_space_size=512',
             '--password-store=basic',
             '--use-mock-keychain',
-            `--user-data-dir=${chromeProfileDir}`
           ],
           ignoreDefaultArgs: [
             '--disable-extensions',
