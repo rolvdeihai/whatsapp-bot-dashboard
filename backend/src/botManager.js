@@ -27,7 +27,7 @@ class BotManager {
     
     // Use LocalAuth directory
     this.authPath = process.env.NODE_ENV === 'production' 
-      ? '/tmp/auth'
+      ? path.join(process.cwd(), 'auth')
       : path.join(__dirname, '../auth');
     
     this.cacheDir = process.env.NODE_ENV === 'production'
@@ -1074,6 +1074,7 @@ class BotManager {
             '--max_old_space_size=512',
             '--password-store=basic',
             '--use-mock-keychain',
+            `--user-data-dir=${chromeProfileDir}`
           ],
           ignoreDefaultArgs: [
             '--disable-extensions',
