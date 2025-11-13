@@ -66,69 +66,17 @@ class BotManager {
     this.startMemoryMonitoring();
     this.loadActiveGroupsFromDisk();
     this.initializeBot();
-    this.logDirectoryCreation();
   }
 
-  logDirectoryCreation() {
-    console.log('🔍 DIRECTORY PATHS:');
-    console.log(`   Auth Path: ${this.authPath}`);
-    console.log(`   Cache Path: ${this.cacheDir}`);
-    console.log(`   Session Path: ${path.join(this.authPath, 'session-admin')}`);
-    console.log(`   Current Working Directory: ${process.cwd()}`);
-    console.log(`   __dirname: ${__dirname}`);
-    
-    // Check if directories exist and log their contents
-    this.logDirectoryContents(this.authPath, 'Auth Directory');
-    this.logDirectoryContents(this.cacheDir, 'Cache Directory');
-  }
-
-  // Method to log directory contents
-  logDirectoryContents(dirPath, label) {
-    try {
-      if (fs.existsSync(dirPath)) {
-        const files = fs.readdirSync(dirPath);
-        console.log(`   ${label} Contents: [${files.join(', ')}]`);
-        
-        // Log subdirectories recursively for session
-        if (label.includes('Auth')) {
-          const sessionPath = path.join(dirPath, 'session-admin');
-          if (fs.existsSync(sessionPath)) {
-            const sessionFiles = fs.readdirSync(sessionPath);
-            console.log(`   Session Directory Contents: [${sessionFiles.join(', ')}]`);
-            
-            // Check Default directory if it exists
-            const defaultPath = path.join(sessionPath, 'Default');
-            if (fs.existsSync(defaultPath)) {
-              const defaultFiles = fs.readdirSync(defaultPath);
-              console.log(`   Default Directory Contents: [${defaultFiles.join(', ')}]`);
-            }
-          }
-        }
-      } else {
-        console.log(`   ${label}: DOES NOT EXIST (will be created)`);
-      }
-    } catch (error) {
-      console.log(`   ${label}: Error reading - ${error.message}`);
-    }
-  }
-
-  // Enhanced ensureDirectoryExists with logging
+  // Safe directory creation
   ensureDirectoryExists(dirPath) {
     try {
       if (!fs.existsSync(dirPath)) {
         fs.mkdirSync(dirPath, { recursive: true });
-        console.log(`📁 CREATED DIRECTORY: ${dirPath}`);
-        
-        // Log permissions
-        const stats = fs.statSync(dirPath);
-        console.log(`   Permissions: ${stats.mode.toString(8)}`);
-        console.log(`   Owner: ${stats.uid}`);
-        console.log(`   Group: ${stats.gid}`);
-      } else {
-        console.log(`📁 EXISTING DIRECTORY: ${dirPath}`);
+        console.log(`Created directory: ${dirPath}`);
       }
     } catch (error) {
-      console.error(`❌ FAILED to create directory ${dirPath}:`, error);
+      console.error(`Failed to create directory ${dirPath}:`, error);
     }
   }
 
@@ -495,56 +443,45 @@ class BotManager {
   hasLocalSession() {
     try {
       const sessionPath = path.join(this.authPath, 'session-admin');
-      console.log(`🔍 CHECKING SESSION: ${sessionPath}`);
-      
       if (fs.existsSync(sessionPath)) {
         const files = fs.readdirSync(sessionPath);
-        console.log(`   Session files found: ${files.join(', ')}`);
         
-        // More detailed session analysis
-        let sessionDetails = {
-          path: sessionPath,
-          files: files,
-          hasWwebjs: files.includes('wwebjs.session.json'),
-          hasBrowserId: files.includes('wwebjs.browserid'),
-          hasDefault: files.includes('Default'),
-          totalFiles: files.length
-        };
-        
-        console.log('   Session Analysis:', JSON.stringify(sessionDetails, null, 2));
-        
-        // Check Default directory contents
-        if (files.includes('Default')) {
-          const defaultPath = path.join(sessionPath, 'Default');
-          const defaultFiles = fs.readdirSync(defaultPath);
-          console.log(`   Default directory: [${defaultFiles.join(', ')}]`);
-          
-          sessionDetails.defaultContents = defaultFiles;
-          
-          // Check for critical browser files
-          const hasCookies = defaultFiles.includes('Cookies');
-          const hasLocalStorage = defaultFiles.some(f => f.includes('Local Storage'));
-          const hasIndexedDB = defaultFiles.some(f => f.includes('IndexedDB'));
-          
-          console.log(`   Critical files - Cookies: ${hasCookies}, LocalStorage: ${hasLocalStorage}, IndexedDB: ${hasIndexedDB}`);
-        }
-        
+        // More flexible session detection
         const hasSessionFiles = files.some(file => 
           file.includes('session') || 
           file.endsWith('.json') || 
           file === 'wwebjs.browserid' ||
           file === 'wwebjs.session.json' ||
-          file === 'Default'
+          file === 'Default' || // Main browser profile
+          file.includes('Local Storage') || // Check subdirectories too
+          file.includes('IndexedDB')
         );
         
-        console.log(`   Valid session detected: ${hasSessionFiles}`);
+        console.log(`Local session files: ${files.join(', ')}`);
+        console.log(`Session detection result: ${hasSessionFiles}`);
+        
+        // Additional check: if Default exists, check if it has content
+        if (files.includes('Default')) {
+          const defaultPath = path.join(sessionPath, 'Default');
+          if (fs.existsSync(defaultPath)) {
+            const defaultFiles = fs.readdirSync(defaultPath);
+            console.log(`Default directory contents: ${defaultFiles.join(', ')}`);
+            // If Default has essential browser files, consider it a valid session
+            const hasBrowserFiles = defaultFiles.some(f => 
+              f === 'Local Storage' || f === 'IndexedDB' || f === 'Cookies'
+            );
+            if (hasBrowserFiles) {
+              console.log('Valid browser session files found');
+              return true;
+            }
+          }
+        }
+        
         return hasSessionFiles;
       }
-      
-      console.log('   No session directory exists');
       return false;
     } catch (error) {
-      console.error('❌ Error checking local session:', error);
+      console.error('Error checking local session:', error);
       return false;
     }
   }
@@ -678,7 +615,7 @@ class BotManager {
 
         // Add ALL files from the session directory recursively
         // This ensures we capture everything WhatsApp Web.js needs
-        archive.directory(tempPath, false);
+        archive.glob('**/*', { cwd: tempPath, dot: true });
 
         archive.finalize();
       });
@@ -1078,7 +1015,7 @@ class BotManager {
           ],
         },
         takeoverOnConflict: false,
-        takeoverTimeoutMs: 90000,
+        takeoverTimeoutMs: 45000,
         restartOnAuthFail: false,
         qrMaxRetries: 2, // Reduced since we have our own retry logic
       });
@@ -1102,22 +1039,6 @@ class BotManager {
     let sessionCheckAfterQR = false;
 
     this.client.on('qr', async (qr) => {
-      console.log('🔍 DEBUG: QR generated, checking session state...');
-      console.log('Session exists:', this.hasLocalSession());
-      console.log('Session path:', path.join(this.authPath, 'session-admin'));
-      
-      // List session files to see what's actually there
-      const sessionPath = path.join(this.authPath, 'session-admin');
-      if (fs.existsSync(sessionPath)) {
-        const files = fs.readdirSync(sessionPath);
-        console.log('Session files:', files);
-        
-        // Check for WhatsApp-specific files
-        const hasWwebjs = files.includes('wwebjs.session.json');
-        const hasWwebjsBrowser = files.includes('wwebjs.browserid');
-        console.log('Has wwebjs.session.json:', hasWwebjs);
-        console.log('Has wwebjs.browserid:', hasWwebjsBrowser);
-      }
       // If we're waiting for session and QR is generated, check if we should retry
       if (this.isWaitingForSession && !this.forceQR) {
         console.log('QR generated while waiting for session - checking if we should retry...');
@@ -1173,47 +1094,20 @@ class BotManager {
     this.client.on('loading_screen', (percent, message) => {
       console.log(`Loading Screen: ${percent}% - ${message}`);
       
-      // ⭐ ADD THIS: If loading progresses with session, assume authentication is working
-      if (this.hasLocalSession() && percent > 10) {
-        console.log('Loading progressing with session - authentication likely successful');
+      // If we have a valid session and loading is happening, we're authenticating
+      if (this.hasLocalSession() && percent > 0 && !qrGenerated) {
         this.emitToAllSockets('bot-status', { status: 'authenticating_with_session' });
       }
     });
 
     this.client.on('authenticated', () => {
-      console.log('✅ Bot authenticated with LocalAuth');
-      
-      // LOG THE SESSION LOCATION AFTER AUTHENTICATION
-      const sessionPath = path.join(this.authPath, 'session-admin');
-      console.log(`📁 SESSION SAVED TO: ${sessionPath}`);
-      
-      if (fs.existsSync(sessionPath)) {
-        const files = fs.readdirSync(sessionPath);
-        console.log(`   New session contents: [${files.join(', ')}]`);
-        
-        // Log file sizes
-        files.forEach(file => {
-          const filePath = path.join(sessionPath, file);
-          try {
-            const stats = fs.statSync(filePath);
-            console.log(`   ${file}: ${stats.size} bytes`);
-          } catch (e) {
-            console.log(`   ${file}: Unable to get stats`);
-          }
-        });
-      }
-      
+      console.log('Bot authenticated with LocalAuth');
       this.emitToAllSockets('bot-status', { status: 'authenticated' });
-      this.forceQR = false;
+      this.forceQR = false; // Reset force QR flag
     });
 
     this.client.on('ready', async () => {
-      console.log('🤖 Bot connected successfully with LocalAuth');
-  
-      // Final directory check
-      console.log('📁 FINAL DIRECTORY STATE:');
-      this.logDirectoryContents(this.authPath, 'Auth Directory');
-      
+      console.log('Bot connected successfully with LocalAuth');
       this.emitToAllSockets('bot-status', { status: 'connected' });
       this.isInitializing = false;
       this.isWaitingForSession = false;
@@ -1273,21 +1167,6 @@ class BotManager {
     this.client.on('message', async (message) => {
       await this.handleMessage(message);
     });
-
-    this.client.on('auth_failure', (error) => {
-      console.error('❌ Bot auth failed:', error);
-      this.emitToAllSockets('bot-status', { status: 'auth_failed' });
-      this.emitToAllSockets('bot-error', { error: 'Authentication failed: ' + error });
-      this.isInitializing = false;
-    });
-
-    const events = ['qr', 'authenticated', 'ready', 'auth_failure', 'disconnected', 'loading_screen'];
-    events.forEach(event => {
-      this.client.on(event, (...args) => {
-        console.log(`🔔 WhatsApp Event: ${event}`, args.length > 0 ? args[0] : '');
-      });
-    });
-
   }
 
   // Stop bot with cleanup
