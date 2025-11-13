@@ -1068,7 +1068,6 @@ class BotManager {
             '--enable-features=NetworkService,NetworkServiceInProcess',
             '--aggressive-cache-discard',
             '--max_old_space_size=512',
-            '--user-data-dir=' + path.join(this.authPath, 'session-admin')
           ],
           ignoreDefaultArgs: [
             '--disable-extensions',
