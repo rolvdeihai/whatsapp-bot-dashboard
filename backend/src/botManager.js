@@ -999,7 +999,7 @@ class BotManager {
       this.client = new Client({
         authStrategy: new LocalAuth({
           clientId: 'admin',
-          dataPath: this.authPath
+          dataPath: path.resolve('./auth')
         }),
         puppeteer: {
           headless: true,
