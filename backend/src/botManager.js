@@ -677,6 +677,29 @@ class BotManager {
    * Restore the *filtered* ZIP that we uploaded.
    * The ZIP contains only the three authentication folders, so extraction is tiny.
    */
+  // Add this method to clean up singleton locks
+  async cleanupSingletonLocks(sessionPath) {
+    try {
+      const lockFiles = [
+        'SingletonLock',
+        'SingletonSocket',
+        'SingletonCookie',
+        'SingletonLock-journal'
+      ];
+      
+      for (const lockFile of lockFiles) {
+        const lockPath = path.join(sessionPath, lockFile);
+        if (fs.existsSync(lockPath)) {
+          await fs.remove(lockPath);
+          console.log(`Removed lock file: ${lockFile}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error cleaning up singleton locks:', error);
+    }
+  }
+
+  // Update the restoreSessionFromSupabase method to call this:
   async restoreSessionFromSupabase() {
     try {
       console.log('Restoring COMPLETE session from Supabase...');
@@ -727,6 +750,9 @@ class BotManager {
       zip.extractAllTo(sessionPath, true);
 
       await fs.remove(zipPath);
+      
+      // Clean up singleton locks after extraction
+      await this.cleanupSingletonLocks(sessionPath);
       
       // Verify the restored session structure
       const hasValidSession = await this.verifySessionStructure(sessionPath);
@@ -894,6 +920,9 @@ class BotManager {
       const files = fs.readdirSync(sessionPath);
       console.log('Restored session contents:', files);
 
+      // Clean up any existing locks during verification
+      await this.cleanupSingletonLocks(sessionPath);
+
       // Check for essential directories
       const hasDefaultDir = files.includes('Default');
       const hasWwebjsFiles = files.some(f => f.includes('wwebjs'));
@@ -996,6 +1025,7 @@ class BotManager {
       }
       
       // Create client (will use session if available)
+      // In the initializeBot method, update the puppeteer args:
       this.client = new Client({
         authStrategy: new LocalAuth({
           clientId: 'admin',
@@ -1012,12 +1042,46 @@ class BotManager {
             '--no-zygote',
             '--single-process',
             '--disable-gpu',
+            '--disable-features=VizDisplayCompositor',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-ipc-flooding-protection',
+            '--no-default-browser-check',
+            '--disable-default-apps',
+            '--disable-translate',
+            '--disable-extensions',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-component-update',
+            '--disable-back-forward-cache',
+            '--disable-session-crashed-bubble',
+            '--disable-crash-reporter',
+            '--disable-plugins',
+            '--disable-plugins-discovery',
+            '--disable-pdf-tagging',
+            '--disable-partial-raster',
+            '--disable-skia-runtime-opts',
+            '--disable-logging',
+            '--disable-in-process-stack-traces',
+            '--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process',
+            '--use-gl=swiftshader',
+            '--enable-features=NetworkService,NetworkServiceInProcess',
+            '--aggressive-cache-discard',
+            '--max_old_space_size=512',
+            '--user-data-dir=' + path.join(this.authPath, 'session-admin')
           ],
+          ignoreDefaultArgs: [
+            '--disable-extensions',
+            '--enable-automation'
+          ],
+          // Add these timeout configurations
+          timeout: 60000,
+          protocolTimeout: 60000,
         },
         takeoverOnConflict: false,
-        takeoverTimeoutMs: 45000,
+        takeoverTimeoutMs: 0, // Set to 0 to disable takeover
         restartOnAuthFail: false,
-        qrMaxRetries: 2, // Reduced since we have our own retry logic
+        qrMaxRetries: 2,
       });
 
       this.setupClientEvents();
