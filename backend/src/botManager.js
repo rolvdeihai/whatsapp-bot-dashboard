@@ -506,6 +506,15 @@ class BotManager {
         this.forceQR = false;
       }
 
+      // In the initializeBot method, add this before creating the client:
+
+      // Ensure ZIP backup exists for RemoteAuth compatibility
+      const zipPath = path.join(this.authPath, 'RemoteAuth-admin.zip');
+      if (!fs.existsSync(zipPath)) {
+        console.log('🔄 Creating empty ZIP backup for RemoteAuth compatibility...');
+        await this.store.saveZipBackup('RemoteAuth-admin', { _initialized: true });
+      }
+
       // Create client with RemoteAuth
       this.client = new Client({
         authStrategy: new RemoteAuth({
