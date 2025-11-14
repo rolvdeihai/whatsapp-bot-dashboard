@@ -28,3 +28,4 @@ yarn-error.log*
 /backend/auth/session-admin/
 /backend/group_cache/
 /backend/.env
+/backend/.wwebjs_cache
