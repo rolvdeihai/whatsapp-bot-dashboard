@@ -22,7 +22,7 @@ class BotManager {
     
     // RemoteAuth configuration
     this.authPath = process.env.NODE_ENV === 'production' 
-      ? path.join('/tmp/whatsapp-auth')
+      ? path.join('/tmp/whatsapp_auth')
       : path.join(__dirname, '../auth');
     
     this.cacheDir = process.env.NODE_ENV === 'production'
@@ -512,6 +512,7 @@ class BotManager {
           clientId: 'admin',
           dataPath: this.authPath,
           store: this.store,
+          backupSyncIntervalMs: 60000, // 1 minute for testing
         }),
         puppeteer: {
           headless: true,
