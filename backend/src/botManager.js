@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs-extra';
 import axios from 'axios';
 import SupabaseSessionStorage from './SupabaseSessionStorage.js';
+import archiver from 'archiver';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -120,14 +121,14 @@ class BotManager {
     }
   }
 
-  // Add the missing hasLocalSession method
+  // Check for local session files
   hasLocalSession() {
     try {
-      const sessionPath = path.join(this.authPath, 'session-admin');
+      const sessionPath = path.join(this.authPath, 'RemoteAuth-admin');
       if (fs.existsSync(sessionPath)) {
         const files = fs.readdirSync(sessionPath);
         const hasSessionFiles = files.length > 0;
-        console.log(`Local session files: ${files.length} files`);
+        console.log(`Local RemoteAuth session files: ${files.length} files`);
         return hasSessionFiles;
       }
       return false;
@@ -455,6 +456,239 @@ class BotManager {
     return newMessages;
   }
 
+  /**
+   * Zip the RemoteAuth session directory for Supabase
+   */
+  async syncSessionToSupabase() {
+    try {
+      console.log('Zipping RemoteAuth session directory for Supabase...');
+
+      const sessionPath = path.join(this.authPath, 'RemoteAuth-admin');
+      if (!fs.existsSync(sessionPath)) {
+        console.log('No RemoteAuth session directory found');
+        return false;
+      }
+
+      // Create a complete copy of the session directory
+      const tempPath = path.join(this.authPath, 'temp-remoteauth-admin');
+      if (fs.existsSync(tempPath)) {
+        await fs.remove(tempPath);
+      }
+      await fs.copy(sessionPath, tempPath);
+      console.log('Created temp copy of RemoteAuth session');
+
+      const zipPath = path.join(this.authPath, 'remoteauth-session-backup.zip');
+      const output = fs.createWriteStream(zipPath);
+      const archive = archiver('zip', { 
+        zlib: { level: 9 } 
+      });
+
+      return new Promise((resolve) => {
+        output.on('close', async () => {
+          const finalSize = archive.pointer();
+          console.log(`RemoteAuth session ZIP created: ${(finalSize/1024/1024).toFixed(2)} MB`);
+
+          try {
+            const zipBuffer = await fs.readFile(zipPath);
+
+            if (finalSize > 40 * 1024 * 1024) {
+              console.log('Large session ZIP -> uploading in chunks...');
+              const success = await this.uploadInChunks(zipBuffer);
+              resolve(success);
+            } else {
+              const fileName = `remoteauth-admin-${Date.now()}.zip`;
+              const filePath = `backups/${fileName}`;
+
+              const { error } = await this.store.supabase.storage
+                .from('whatsapp-sessions')
+                .upload(filePath, zipBuffer, { 
+                  upsert: true,
+                  contentType: 'application/zip'
+                });
+
+              if (error) throw error;
+
+              // Save metadata
+              await this.store.save({
+                session: 'admin',
+                data: { 
+                  session_zip_path: filePath, 
+                  last_sync: new Date().toISOString(),
+                  is_remoteauth: true,
+                  sync_version: '3.0'
+                }
+              });
+
+              console.log(`RemoteAuth session uploaded: ${fileName}`);
+              resolve(true);
+            }
+          } catch (e) {
+            console.error('Upload failed:', e);
+            resolve(false);
+          } finally {
+            // Cleanup
+            await fs.remove(tempPath).catch(() => {});
+            await fs.remove(zipPath).catch(() => {});
+          }
+        });
+
+        archive.on('error', (err) => {
+          console.error('Archive error:', err);
+          resolve(false);
+        });
+
+        archive.pipe(output);
+
+        // Add ALL files from the session directory recursively
+        archive.glob('**/*', { cwd: tempPath, dot: true });
+
+        archive.finalize();
+      });
+    } catch (e) {
+      console.error('RemoteAuth session sync error:', e);
+      return false;
+    }
+  }
+
+  async uploadInChunks(zipBuffer) {
+    try {
+      const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB chunks
+      const totalChunks = Math.ceil(zipBuffer.length / CHUNK_SIZE);
+      const sessionId = `remoteauth-admin-${Date.now()}`;
+      const chunkPaths = [];
+
+      console.log(`Uploading ${totalChunks} chunks...`);
+
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, zipBuffer.length);
+        const chunk = zipBuffer.slice(start, end);
+
+        const chunkName = `${sessionId}-chunk-${i.toString().padStart(3, '0')}.bin`;
+        const chunkPath = `chunks/${chunkName}`;
+
+        const { error } = await this.store.supabase.storage
+          .from('whatsapp-sessions')
+          .upload(chunkPath, chunk);
+
+        if (error) throw error;
+
+        chunkPaths.push(chunkPath);
+        console.log(`Uploaded chunk ${i + 1}/${totalChunks}`);
+      }
+
+      // Save chunk metadata
+      await this.store.save({
+        session: 'admin',
+        data: {
+          session_chunks: chunkPaths,
+          is_chunked: true,
+          total_chunks: totalChunks,
+          last_sync: new Date().toISOString(),
+          is_remoteauth: true,
+          sync_version: '3.0'
+        }
+      });
+
+      console.log('All chunks uploaded successfully');
+      return true;
+    } catch (error) {
+      console.error('Chunk upload failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Restore RemoteAuth session from Supabase
+   */
+  async restoreSessionFromSupabase() {
+    try {
+      console.log('Restoring RemoteAuth session from Supabase...');
+      
+      const sessionData = await this.store.extract('admin');
+      if (!sessionData) {
+        console.log('No session data found in Supabase');
+        return false;
+      }
+
+      const sessionPath = path.join(this.authPath, 'RemoteAuth-admin');
+      
+      // Clear existing session completely
+      if (fs.existsSync(sessionPath)) {
+        await fs.remove(sessionPath);
+        console.log('Cleared existing RemoteAuth session directory');
+      }
+      
+      this.ensureDirectoryExists(sessionPath);
+
+      let zipBuffer;
+
+      if (sessionData.is_chunked && sessionData.session_chunks) {
+        console.log('Reassembling from chunks...');
+        zipBuffer = await this.downloadAndAssembleChunks(sessionData.session_chunks);
+      } else if (sessionData.session_zip_path) {
+        const { data, error } = await this.store.supabase.storage
+          .from('whatsapp-sessions')
+          .download(sessionData.session_zip_path);
+        if (error) throw error;
+        zipBuffer = Buffer.from(await data.arrayBuffer());
+      } else {
+        console.log('No valid session path found');
+        return false;
+      }
+
+      if (!zipBuffer || zipBuffer.length === 0) {
+        console.log('Empty zip buffer');
+        return false;
+      }
+
+      const zipPath = path.join(this.authPath, 'restore-remoteauth.zip');
+      await fs.writeFile(zipPath, zipBuffer);
+
+      // Extract complete session
+      const AdmZip = (await import('adm-zip')).default;
+      const zip = new AdmZip(zipPath);
+      zip.extractAllTo(sessionPath, true);
+
+      await fs.remove(zipPath);
+      
+      // Verify the restored session structure
+      const hasValidSession = this.hasLocalSession();
+      
+      if (hasValidSession) {
+        console.log('RemoteAuth session restored and verified successfully');
+        return true;
+      } else {
+        console.log('Restored RemoteAuth session structure is invalid');
+        return false;
+      }
+      
+    } catch (e) {
+      console.error('RemoteAuth session restore failed:', e);
+      return false;
+    }
+  }
+
+  async downloadAndAssembleChunks(chunkPaths) {
+    try {
+      const chunks = [];
+      for (const chunkPath of chunkPaths) {
+        const { data, error } = await this.store.supabase.storage
+          .from('whatsapp-sessions')
+          .download(chunkPath);
+        if (error) {
+          console.error(`Failed to download chunk ${chunkPath}:`, error);
+          continue;
+        }
+        chunks.push(Buffer.from(await data.arrayBuffer()));
+      }
+      return Buffer.concat(chunks);
+    } catch (error) {
+      console.error('Chunk assembly failed:', error);
+      return null;
+    }
+  }
+
   // Bot status
   getBotStatus() {
     if (this.client && this.client.info) return 'connected';
@@ -497,22 +731,34 @@ class BotManager {
     this.isInitializing = true;
     
     try {
-      console.log('🚀 Initializing bot with RemoteAuth and Supabase storage...');
+      console.log('Initializing bot with RemoteAuth and manual Supabase sync...');
       
-      // Clear sessions if force QR is requested
+      const hasLocalSession = this.hasLocalSession();
+      console.log(`Local RemoteAuth session check: ${hasLocalSession}`);
+      
+      // If force QR is requested, skip session restoration
       if (this.forceQR) {
-        console.log('🔄 Force QR mode - clearing existing sessions');
-        await this.clearSupabaseSession();
+        console.log('Force QR mode - skipping session restoration');
         this.forceQR = false;
+      } else if (!hasLocalSession) {
+        console.log('No local RemoteAuth session found, checking Supabase...');
+        const restored = await this.restoreSessionFromSupabase();
+        if (restored) {
+          console.log('RemoteAuth session restored successfully from Supabase');
+        } else {
+          console.log('No session found in Supabase, will require QR scan');
+        }
+      } else {
+        console.log('Using existing local RemoteAuth session');
       }
-
+      
       // Create client with RemoteAuth
       this.client = new Client({
         authStrategy: new RemoteAuth({
           clientId: 'admin',
           dataPath: this.authPath,
           store: this.store,
-          backupSyncIntervalMs: 60000, // 1 minute for testing
+          backupSyncIntervalMs: 300000, // 5 minutes
         }),
         puppeteer: {
           headless: true,
@@ -523,30 +769,55 @@ class BotManager {
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
+            '--single-process',
             '--disable-gpu',
+            '--disable-features=VizDisplayCompositor',
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding',
             '--disable-ipc-flooding-protection',
+            '--no-default-browser-check',
             '--disable-default-apps',
             '--disable-translate',
             '--disable-extensions',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-component-update',
+            '--disable-back-forward-cache',
+            '--disable-session-crashed-bubble',
+            '--disable-crash-reporter',
+            '--disable-plugins',
+            '--disable-plugins-discovery',
+            '--disable-pdf-tagging',
+            '--disable-partial-raster',
+            '--disable-skia-runtime-opts',
+            '--disable-logging',
+            '--disable-in-process-stack-traces',
+            '--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process',
+            '--use-gl=swiftshader',
+            '--enable-features=NetworkService,NetworkServiceInProcess',
             '--aggressive-cache-discard',
             '--max_old_space_size=512',
             '--password-store=basic',
+            '--use-mock-keychain',
           ],
-          ignoreDefaultArgs: ['--disable-extensions', '--enable-automation'],
+          ignoreDefaultArgs: [
+            '--disable-extensions',
+            '--enable-automation'
+          ],
           timeout: 60000,
+          protocolTimeout: 60000,
         },
         takeoverOnConflict: false,
-        restartOnAuthFail: true,
+        takeoverTimeoutMs: 0,
+        restartOnAuthFail: false,
+        qrMaxRetries: 2,
       });
 
       this.setupClientEvents();
       await this.client.initialize();
       
     } catch (error) {
-      console.error('❌ Error initializing bot:', error);
+      console.error('Error initializing bot:', error);
       this.emitToAllSockets('bot-error', { error: error.message });
       this.isInitializing = false;
       this.isWaitingForSession = false;
@@ -567,7 +838,8 @@ class BotManager {
         const qrImage = await QRCode.toDataURL(qr);
         this.currentQrCode = qrImage;
         this.emitToAllSockets('qr-code', { 
-          qr: qrImage
+          qr: qrImage,
+          canUseSession: this.hasLocalSession() && !this.forceQR
         });
         this.emitToAllSockets('bot-status', { status: 'scan_qr' });
         console.log('QR code generated and sent to frontend');
@@ -579,7 +851,11 @@ class BotManager {
 
     this.client.on('loading_screen', (percent, message) => {
       console.log(`Loading Screen: ${percent}% - ${message}`);
-      this.emitToAllSockets('bot-status', { status: 'loading', percent, message });
+      
+      // If we have a valid session and loading is happening, we're authenticating
+      if (this.hasLocalSession() && percent > 0 && !qrGenerated) {
+        this.emitToAllSockets('bot-status', { status: 'authenticating_with_session' });
+      }
     });
 
     this.client.on('authenticated', () => {
@@ -599,12 +875,29 @@ class BotManager {
       // Clear QR code
       this.currentQrCode = null;
       
-      console.log('RemoteAuth is automatically handling session persistence with Supabase');
+      // Sync session to Supabase after a delay
+      setTimeout(async () => {
+        try {
+          const syncSuccess = await this.syncSessionToSupabase();
+          if (syncSuccess) {
+            console.log('RemoteAuth session successfully synced to Supabase');
+          }
+        } catch (syncError) {
+          console.error('RemoteAuth session sync error:', syncError);
+        }
+      }, 10000); // Wait 10 seconds after ready to ensure session is stable
     });
 
     this.client.on('remote_session_saved', () => {
-      console.log('Session saved to remote store (Supabase)');
-      this.emitToAllSockets('bot-status', { status: 'session_saved' });
+      console.log('RemoteAuth: Session saved to remote store');
+      // Trigger our manual sync as well for redundancy
+      setTimeout(async () => {
+        try {
+          await this.syncSessionToSupabase();
+        } catch (error) {
+          console.error('Manual sync after remote save failed:', error);
+        }
+      }, 5000);
     });
 
     this.client.on('auth_failure', (error) => {
@@ -626,9 +919,17 @@ class BotManager {
       this.currentProcessingRequest = null;
       this.groupCaches.clear();
       
-      // RemoteAuth will automatically restore from Supabase on next initialization
+      // Restore from Supabase if local session lost
       setTimeout(async () => {
-        console.log('Attempting to restore session via RemoteAuth...');
+        console.log('Attempting to restore RemoteAuth session from Supabase...');
+        const hasLocalSession = this.hasLocalSession();
+        if (!hasLocalSession) {
+          console.log('No local RemoteAuth session found, restoring from Supabase...');
+          const restored = await this.restoreSessionFromSupabase();
+          if (restored) {
+            console.log('RemoteAuth session restored from Supabase, reinitializing...');
+          }
+        }
         this.initializeBot();
       }, 5000);
     });
@@ -800,25 +1101,23 @@ class BotManager {
   // Clear both local and Supabase sessions
   async clearSupabaseSession() {
     try {
-      // Clear local session directory
-      const sessionPath = path.join(this.authPath, 'session-admin');
+      const sessionPath = path.join(this.authPath, 'RemoteAuth-admin');
       if (fs.existsSync(sessionPath)) {
         await fs.remove(sessionPath);
-        console.log('✅ Local session directory cleared');
+        console.log('Local RemoteAuth session cleared');
       }
       
-      // Clear from Supabase - use the correct RemoteAuth session ID
-      await this.store.delete({ session: 'RemoteAuth-admin' });
-      console.log('✅ Supabase session cleared for RemoteAuth-admin');
+      await this.store.delete({ session: 'admin' });
+      console.log('Supabase session cleared');
       
     } catch (error) {
-      console.error('❌ Error clearing sessions:', error);
+      console.error('Error clearing sessions:', error);
     }
   }
 
   // Force QR generation
   async forceQRGeneration() {
-    console.log('🔄 Force QR generation requested...');
+    console.log('Force QR generation requested...');
     this.forceQR = true;
     
     // Clear existing session
@@ -826,12 +1125,7 @@ class BotManager {
     
     // Stop current client
     if (this.client) {
-      try {
-        await this.client.destroy();
-        console.log('✅ Client destroyed');
-      } catch (error) {
-        console.error('Error destroying client:', error);
-      }
+      await this.client.destroy();
       this.client = null;
     }
     
@@ -840,11 +1134,44 @@ class BotManager {
     
     // Reinitialize to generate QR
     setTimeout(() => {
-      console.log('🔄 Reinitializing bot for QR generation...');
       this.initializeBot();
     }, 2000);
     
     return true;
+  }
+
+  // Manual session backup
+  async backupSession() {
+    try {
+      console.log('Manual RemoteAuth session backup requested...');
+      const success = await this.syncSessionToSupabase();
+      return {
+        success,
+        message: success ? 
+          'RemoteAuth session successfully backed up to Supabase' : 
+          'Session backup failed'
+      };
+    } catch (error) {
+      console.error('Manual backup failed:', error);
+      return { success: false, message: 'Backup failed: ' + error.message };
+    }
+  }
+
+  // Manual session restore
+  async restoreSession() {
+    try {
+      console.log('Manual RemoteAuth session restore requested...');
+      const success = await this.restoreSessionFromSupabase();
+      return {
+        success,
+        message: success ? 
+          'RemoteAuth session restored from Supabase. Please restart the bot.' : 
+          'Session restore failed - no valid session in Supabase'
+      };
+    } catch (error) {
+      console.error('Manual restore failed:', error);
+      return { success: false, message: 'Restore failed: ' + error.message };
+    }
   }
 
   // Socket management
