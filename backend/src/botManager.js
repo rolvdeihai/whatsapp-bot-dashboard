@@ -9,6 +9,33 @@ import fs from 'fs-extra';
 import axios from 'axios';
 import SupabaseSessionStorage from './SupabaseSessionStorage.js';
 
+// Add this at the top of your main file
+process.on('unhandledRejection', (reason, promise) => {
+  console.log('🔶 Unhandled Rejection at:', promise, 'reason:', reason);
+  
+  // Ignore specific RemoteAuth cleanup errors
+  if (reason.code === 'ENOENT' && reason.path && reason.path.includes('wwebjs_temp_session_admin')) {
+    console.log('🔶 Ignoring RemoteAuth temporary directory cleanup error - this is normal');
+    return;
+  }
+  
+  // For other errors, log them but don't crash
+  console.error('🔶 Unhandled Rejection (non-critical):', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('🔴 Uncaught Exception:', error);
+  
+  // Ignore specific file system errors from RemoteAuth
+  if (error.code === 'ENOENT' && error.path && error.path.includes('wwebjs_temp_session_admin')) {
+    console.log('🔶 Ignoring RemoteAuth file system error - this is normal');
+    return;
+  }
+  
+  // For serious errors, you might want to restart
+  console.error('🔴 Critical error,可能需要重启:', error);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -487,20 +514,13 @@ class BotManager {
     }
   }
 
+  // Remove or simplify ensureAllDirectories - just ensure the main auth path
   ensureAllDirectories() {
     try {
-      // Ensure main auth directory
+      // Only ensure the main auth directory exists
+      // RemoteAuth will create its own temporary directories automatically
       this.ensureDirectoryExists(this.authPath);
-      
-      // Ensure temporary session directory for RemoteAuth
-      const tempSessionDir = path.join(this.authPath, 'wwebjs_temp_session_admin');
-      this.ensureDirectoryExists(tempSessionDir);
-      
-      // Ensure the Default subdirectory that RemoteAuth expects
-      const defaultDir = path.join(tempSessionDir, 'Default');
-      this.ensureDirectoryExists(defaultDir);
-      
-      console.log('✅ All required directories created');
+      console.log('✅ Main auth directory ensured');
     } catch (error) {
       console.error('❌ Error creating directories:', error);
     }
@@ -518,7 +538,8 @@ class BotManager {
     try {
       console.log('🚀 Initializing bot with RemoteAuth and Supabase storage...');
       
-      this.ensureAllDirectories();
+      // Only ensure main auth directory exists
+      this.ensureDirectoryExists(this.authPath);
       
       // Clear sessions if force QR is requested
       if (this.forceQR) {
@@ -527,17 +548,14 @@ class BotManager {
         this.forceQR = false;
       }
 
-      // Create client with RemoteAuth
+      // Create client with RemoteAuth - let it manage userDataDir automatically
       this.client = new Client({
         authStrategy: new RemoteAuth({
           clientId: 'admin',
           dataPath: this.authPath,
           store: this.store,
           backupSyncIntervalMs: 60000,
-          // ADD THESE OPTIONS TO PREVENT CLEANUP ERRORS:
-          puppeteer: {
-            userDataDir: path.join(this.authPath, 'wwebjs_temp_session_admin')
-          }
+          // No puppeteer options here - RemoteAuth manages it
         }),
         puppeteer: {
           headless: true,
@@ -562,8 +580,7 @@ class BotManager {
           ],
           ignoreDefaultArgs: ['--disable-extensions', '--enable-automation'],
           timeout: 60000,
-          // ADD EXPLICIT USER DATA DIRECTORY:
-          userDataDir: path.join(this.authPath, 'wwebjs_temp_session_admin')
+          // No userDataDir here - RemoteAuth manages it
         },
         takeoverOnConflict: false,
         restartOnAuthFail: true,
