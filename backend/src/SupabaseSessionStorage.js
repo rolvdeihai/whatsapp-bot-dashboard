@@ -48,17 +48,27 @@ class SupabaseSessionStorage {
     return path.join(this.authPath, `${session}.zip`);
   }
 
+  // Only create ZIP backup when we have actual session data
   async saveZipBackup(session, data) {
     try {
+      // Don't create empty backups - this prevents RemoteAuth from using invalid sessions
+      if (!data || (typeof data === 'object' && Object.keys(data).length === 0)) {
+        console.log(`⚠️ Skipping ZIP backup - no valid session data for: ${session}`);
+        return false;
+      }
+
       const zipPath = this.getZipPath(session);
-      // For now, we'll just create an empty file to satisfy RemoteAuth
-      await fs.writeFile(zipPath, JSON.stringify({
+      
+      // Create a minimal valid session structure that RemoteAuth expects
+      const backupData = {
         session,
-        data,
+        data: data,
         _backup: true,
         timestamp: new Date().toISOString()
-      }));
-      console.log(`✅ Created ZIP backup for session: ${session}`);
+      };
+      
+      await fs.writeFile(zipPath, JSON.stringify(backupData));
+      console.log(`✅ Created valid ZIP backup for session: ${session}`);
       return true;
     } catch (error) {
       console.error(`❌ Failed to create ZIP backup for ${session}:`, error);
@@ -74,10 +84,17 @@ class SupabaseSessionStorage {
         return null;
       }
       
-      const data = await fs.readFile(zipPath, 'utf8');
-      const parsed = JSON.parse(data);
-      console.log(`✅ Loaded ZIP backup for session: ${session}`);
-      return parsed.data;
+      const fileData = await fs.readFile(zipPath, 'utf8');
+      const parsed = JSON.parse(fileData);
+      
+      // Only return if we have valid session data
+      if (parsed.data && typeof parsed.data === 'object' && Object.keys(parsed.data).length > 0) {
+        console.log(`✅ Loaded valid ZIP backup for session: ${session}`);
+        return parsed.data;
+      } else {
+        console.log(`⚠️ ZIP backup exists but contains no valid session data for: ${session}`);
+        return null;
+      }
     } catch (error) {
       console.error(`❌ Failed to load ZIP backup for ${session}:`, error);
       return null;
@@ -155,14 +172,7 @@ class SupabaseSessionStorage {
     try {
       console.log(`🔍 sessionExists called with session=${session}`);
       
-      // First check if ZIP backup exists (RemoteAuth prefers this)
-      const zipPath = this.getZipPath(session);
-      if (fs.existsSync(zipPath)) {
-        console.log('✅ sessionExists -> found ZIP backup');
-        return true;
-      }
-      
-      // Fall back to Supabase check
+      // First check Supabase for valid session
       const { data, error } = await this.supabase
         .from(this.table)
         .select('session_data')
@@ -171,16 +181,38 @@ class SupabaseSessionStorage {
 
       if (error) {
         console.error('❌ Supabase sessionExists error:', error);
-        return false;
+        // Fall back to ZIP check
+        return await this.checkZipBackupExists(session);
       }
-      if (!data || !data.session_data) {
-        console.log('❌ sessionExists -> not found or empty');
-        return false;
+      
+      if (data && data.session_data) {
+        console.log('✅ sessionExists -> found valid session in Supabase');
+        return true;
       }
-      console.log('✅ sessionExists -> found in Supabase');
-      return true;
+
+      // Fall back to ZIP backup check
+      return await this.checkZipBackupExists(session);
+      
     } catch (err) {
       console.error('❌ sessionExists exception:', err);
+      return false;
+    }
+  }
+
+  async checkZipBackupExists(session) {
+    try {
+      const zipPath = this.getZipPath(session);
+      if (!fs.existsSync(zipPath)) {
+        return false;
+      }
+      
+      // Check if ZIP backup has valid data
+      const zipData = await this.loadZipBackup(session);
+      const exists = zipData !== null;
+      console.log(`✅ sessionExists -> ZIP backup ${exists ? 'exists with valid data' : 'exists but invalid'}`);
+      return exists;
+    } catch (error) {
+      console.error('Error checking ZIP backup:', error);
       return false;
     }
   }
@@ -189,36 +221,34 @@ class SupabaseSessionStorage {
     try {
       console.log(`🔍 extract called for session=${session}`);
       
-      // Try to load from ZIP backup first
-      const zipData = await this.loadZipBackup(session);
-      if (zipData) {
-        console.log(`✅ extract -> found data in ZIP backup, type: ${typeof zipData}`);
-        return zipData;
-      }
-      
-      // Fall back to Supabase
+      // Try to load from Supabase first
       const { data, error } = await this.supabase
         .from(this.table)
         .select('session_data')
         .eq('session_id', session)
         .maybeSingle();
 
-      if (error) {
-        console.error('❌ Supabase extract error:', error);
-        return null;
+      if (!error && data && data.session_data) {
+        const sessionData = data.session_data;
+        console.log(`✅ extract -> found valid data in Supabase, type: ${typeof sessionData}`);
+        
+        // Create ZIP backup for next time (only if we have valid data)
+        await this.saveZipBackup(session, sessionData);
+        
+        return sessionData;
       }
-      if (!data) {
-        console.log('❌ extract -> no data found');
-        return null;
+
+      // Fall back to ZIP backup
+      console.log('⚠️ No valid Supabase session, falling back to ZIP backup...');
+      const zipData = await this.loadZipBackup(session);
+      if (zipData) {
+        console.log(`✅ extract -> found valid data in ZIP backup, type: ${typeof zipData}`);
+        return zipData;
       }
+
+      console.log('❌ extract -> no valid session data found anywhere');
+      return null;
       
-      const sessionData = data.session_data;
-      console.log(`✅ extract -> found data in Supabase, type: ${typeof sessionData}`);
-      
-      // Create ZIP backup for next time
-      await this.saveZipBackup(session, sessionData);
-      
-      return sessionData || null;
     } catch (err) {
       console.error('❌ extract exception:', err);
       return null;
@@ -243,19 +273,10 @@ class SupabaseSessionStorage {
         return;
       }
 
-      // Save to ZIP backup (RemoteAuth expects this)
-      await this.saveZipBackup(session, data);
-      
-      // Also save to Supabase for persistence
+      // Only save to Supabase if we have valid data
       if (typeof data === 'object' && Object.keys(data).length === 0) {
-        console.log('⚠️ Empty object data, but saving anyway for debugging...');
-        const debugData = {
-          _debug: 'empty_object_saved',
-          timestamp: new Date().toISOString(),
-          original_data: data
-        };
-        await this._upsertRow(session, debugData);
-        console.log(`✅ Saved debug data for session: ${session}`);
+        console.log('⚠️ Empty object data detected - this might be an initial empty session');
+        // Don't save empty sessions to avoid issues
         return;
       }
 
@@ -263,12 +284,18 @@ class SupabaseSessionStorage {
         type: typeof data,
         isBuffer: Buffer.isBuffer(data),
         isObject: typeof data === 'object',
-        keys: typeof data === 'object' ? Object.keys(data) : 'N/A',
-        sample: typeof data === 'object' ? JSON.stringify(data).substring(0, 200) : String(data).substring(0, 200)
+        keys: typeof data === 'object' ? Object.keys(data) : 'N/A'
       });
 
+      // Save to Supabase
       await this._upsertRow(session, data);
-      console.log(`✅ Supabase: session saved: ${session}`);
+      
+      // Only create ZIP backup if we have substantial session data
+      if (typeof data === 'object' && Object.keys(data).length > 2) {
+        await this.saveZipBackup(session, data);
+      }
+      
+      console.log(`✅ Session saved successfully: ${session}`);
       return;
     } catch (err) {
       console.error('❌ Error in save():', err);
