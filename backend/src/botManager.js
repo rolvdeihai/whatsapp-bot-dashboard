@@ -807,9 +807,9 @@ class BotManager {
         console.log('✅ Local session directory cleared');
       }
       
-      // Clear from Supabase - use the correct session ID
+      // Clear from Supabase - use the correct RemoteAuth session ID
       await this.store.delete({ session: 'RemoteAuth-admin' });
-      console.log('✅ Supabase session cleared');
+      console.log('✅ Supabase session cleared for RemoteAuth-admin');
       
     } catch (error) {
       console.error('❌ Error clearing sessions:', error);
