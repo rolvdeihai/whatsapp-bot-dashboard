@@ -497,15 +497,22 @@ class BotManager {
     this.isInitializing = true;
     
     try {
-      console.log('Initializing bot with RemoteAuth and Supabase storage...');
+      console.log('🚀 Initializing bot with RemoteAuth and Supabase storage...');
       
-      // Create client with RemoteAuth - FIXED session ID
+      // Clear sessions if force QR is requested
+      if (this.forceQR) {
+        console.log('🔄 Force QR mode - clearing existing sessions');
+        await this.clearSupabaseSession();
+        this.forceQR = false;
+      }
+
+      // Create client with RemoteAuth
       this.client = new Client({
         authStrategy: new RemoteAuth({
           clientId: 'admin',
           dataPath: this.authPath,
           store: this.store,
-          backupSyncIntervalMs: 300000, // Sync every 5 minutes
+          backupSyncIntervalMs: 60000, // 1 minute for testing
         }),
         puppeteer: {
           headless: true,
@@ -516,55 +523,30 @@ class BotManager {
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--single-process',
             '--disable-gpu',
-            '--disable-features=VizDisplayCompositor',
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding',
             '--disable-ipc-flooding-protection',
-            '--no-default-browser-check',
             '--disable-default-apps',
             '--disable-translate',
             '--disable-extensions',
-            '--disable-component-extensions-with-background-pages',
-            '--disable-component-update',
-            '--disable-back-forward-cache',
-            '--disable-session-crashed-bubble',
-            '--disable-crash-reporter',
-            '--disable-plugins',
-            '--disable-plugins-discovery',
-            '--disable-pdf-tagging',
-            '--disable-partial-raster',
-            '--disable-skia-runtime-opts',
-            '--disable-logging',
-            '--disable-in-process-stack-traces',
-            '--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process',
-            '--use-gl=swiftshader',
-            '--enable-features=NetworkService,NetworkServiceInProcess',
             '--aggressive-cache-discard',
             '--max_old_space_size=512',
             '--password-store=basic',
-            '--use-mock-keychain',
           ],
-          ignoreDefaultArgs: [
-            '--disable-extensions',
-            '--enable-automation'
-          ],
+          ignoreDefaultArgs: ['--disable-extensions', '--enable-automation'],
           timeout: 60000,
-          protocolTimeout: 60000,
         },
         takeoverOnConflict: false,
-        takeoverTimeoutMs: 0,
-        restartOnAuthFail: false,
-        qrMaxRetries: 2,
+        restartOnAuthFail: true,
       });
 
       this.setupClientEvents();
       await this.client.initialize();
       
     } catch (error) {
-      console.error('Error initializing bot:', error);
+      console.error('❌ Error initializing bot:', error);
       this.emitToAllSockets('bot-error', { error: error.message });
       this.isInitializing = false;
       this.isWaitingForSession = false;
@@ -818,23 +800,25 @@ class BotManager {
   // Clear both local and Supabase sessions
   async clearSupabaseSession() {
     try {
+      // Clear local session directory
       const sessionPath = path.join(this.authPath, 'session-admin');
       if (fs.existsSync(sessionPath)) {
-        fs.rmSync(sessionPath, { recursive: true, force: true });
-        console.log('Local session cleared');
+        await fs.remove(sessionPath);
+        console.log('✅ Local session directory cleared');
       }
       
-      await this.store.delete({ session: 'admin' });
-      console.log('Supabase session cleared');
+      // Clear from Supabase - use the correct session ID
+      await this.store.delete({ session: 'RemoteAuth-admin' });
+      console.log('✅ Supabase session cleared');
       
     } catch (error) {
-      console.error('Error clearing sessions:', error);
+      console.error('❌ Error clearing sessions:', error);
     }
   }
 
   // Force QR generation
   async forceQRGeneration() {
-    console.log('Force QR generation requested...');
+    console.log('🔄 Force QR generation requested...');
     this.forceQR = true;
     
     // Clear existing session
@@ -842,7 +826,12 @@ class BotManager {
     
     // Stop current client
     if (this.client) {
-      await this.client.destroy();
+      try {
+        await this.client.destroy();
+        console.log('✅ Client destroyed');
+      } catch (error) {
+        console.error('Error destroying client:', error);
+      }
       this.client = null;
     }
     
@@ -851,6 +840,7 @@ class BotManager {
     
     // Reinitialize to generate QR
     setTimeout(() => {
+      console.log('🔄 Reinitializing bot for QR generation...');
       this.initializeBot();
     }, 2000);
     
