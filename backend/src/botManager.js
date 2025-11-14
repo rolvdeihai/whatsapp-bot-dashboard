@@ -1,5 +1,4 @@
-// whatsapp-bot-dashboard/backend/src/botManager.js
-
+// backend/src/botManager.js
 import pkg from 'whatsapp-web.js';
 const { Client, RemoteAuth } = pkg;
 import QRCode from 'qrcode';
@@ -9,66 +8,73 @@ import fs from 'fs-extra';
 import axios from 'axios';
 import SupabaseSessionStorage from './SupabaseSessionStorage.js';
 import archiver from 'archiver';
+import { setTimeout as wait } from 'timers/promises';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 class BotManager {
-  constructor() {
+  constructor(options = {}) {
+    // Basic runtime state
     this.client = null;
     this.activeGroups = [];
     this.socketConnections = [];
     this.isInitializing = false;
+
+    // Session/restore state
+    this.isRestoring = false;
+    this.isHydrated = false; // set true after we've verified local session is stable
     this.currentQrCode = null;
-    
-    // RemoteAuth configuration
-    this.authPath = process.env.NODE_ENV === 'production' 
+    this.forceQR = false;
+
+    // Local paths
+    this.authPath = process.env.NODE_ENV === 'production'
       ? path.join(process.cwd(), 'auth')
       : path.join(__dirname, '../auth');
-    
+
     this.cacheDir = process.env.NODE_ENV === 'production'
       ? '/tmp/group_cache'
       : path.join(__dirname, '../group_cache');
-    
+
     this.ensureDirectoryExists(this.authPath);
     this.ensureDirectoryExists(this.cacheDir);
 
+    // External storage adapter
     this.store = new SupabaseSessionStorage();
 
-    // Group caching with lazy loading
-    this.groupsCache = {
-      data: [],
-      lastUpdated: 0,
-      cacheDuration: 5 * 60 * 1000,
-      isUpdating: false
-    };
-    
-    // Global queue with limits
+    // Queues, caches, limits
     this.processingQueue = [];
     this.isProcessing = false;
     this.currentProcessingRequest = null;
-    this.maxQueueSize = 10;
-    
-    // Rate limiting
+    this.maxQueueSize = options.maxQueueSize || 10;
+
     this.lastCommandTime = 0;
     this.minCommandInterval = 3000;
-    
-    // In-memory cache with limits
+
     this.groupCaches = new Map();
     this.maxCachedGroups = 5;
     this.maxCachedMessages = 30;
 
+    // Retry/session control
     this.sessionRetryAttempts = 0;
     this.maxSessionRetries = 3;
-    this.isWaitingForSession = false;
-    this.forceQR = false;
-    
+    this.sessionRestoreTimeoutMs = 30 * 1000; // 30s to restore and hydrate before fallback
+    this.restorePollIntervalMs = 750; // polling while waiting for files to stabilize
+
+    // Memory monitoring for low-RAM environments
     this.startMemoryMonitoring();
+
+    // load persisted active groups
     this.loadActiveGroupsFromDisk();
+
+    // Start the bot (non-blocking)
+    // Hybrid strategy: attempt restore, but fallback to QR
     this.initializeBot();
   }
 
-  // Safe directory creation
+  // -------------------------
+  // Utilities
+  // -------------------------
   ensureDirectoryExists(dirPath) {
     try {
       if (!fs.existsSync(dirPath)) {
@@ -80,82 +86,127 @@ class BotManager {
     }
   }
 
-  // Memory monitoring system
   startMemoryMonitoring() {
-    setInterval(() => {
-      this.checkMemoryUsage();
-    }, 30000);
+    setInterval(() => this.checkMemoryUsage(), 30 * 1000);
   }
 
   checkMemoryUsage() {
-    const used = process.memoryUsage();
-    const usedMB = Math.round(used.heapUsed / 1024 / 1024);
-    const totalMB = Math.round(used.heapTotal / 1024 / 1024);
-    
-    console.log(`Memory usage: ${usedMB}MB / ${totalMB}MB`);
-    
-    if (usedMB > 200) {
-      console.log('High memory usage detected, performing cleanup...');
-      this.performMemoryCleanup();
+    try {
+      const used = process.memoryUsage();
+      const usedMB = Math.round(used.heapUsed / 1024 / 1024);
+      const totalMB = Math.round(used.heapTotal / 1024 / 1024);
+      console.log(`Memory usage: ${usedMB}MB / ${totalMB}MB`);
+      if (usedMB > 200) {
+        console.log('High memory usage detected, performing cleanup...');
+        this.performMemoryCleanup();
+      }
+    } catch (e) {
+      console.error('Memory monitor error:', e);
     }
   }
 
   performMemoryCleanup() {
-    console.log('Performing memory cleanup...');
-    
-    if (this.processingQueue.length > this.maxQueueSize) {
-      console.log(`Trimming queue from ${this.processingQueue.length} to ${this.maxQueueSize} items`);
-      this.processingQueue = this.processingQueue.slice(0, this.maxQueueSize);
-    }
-    
-    if (this.groupCaches.size > this.maxCachedGroups) {
-      const entries = Array.from(this.groupCaches.entries());
-      const recentEntries = entries.slice(-this.maxCachedGroups);
-      this.groupCaches = new Map(recentEntries);
-      console.log(`Cleared group caches, keeping ${recentEntries.length} groups`);
-    }
-    
-    if (global.gc) {
-      global.gc();
-      console.log('Forced garbage collection');
+    try {
+      if (this.processingQueue.length > this.maxQueueSize) {
+        console.log(`Trimming queue from ${this.processingQueue.length} to ${this.maxQueueSize}`);
+        this.processingQueue = this.processingQueue.slice(0, this.maxQueueSize);
+      }
+      if (this.groupCaches.size > this.maxCachedGroups) {
+        const entries = Array.from(this.groupCaches.entries());
+        const keep = entries.slice(-this.maxCachedGroups);
+        this.groupCaches = new Map(keep);
+        console.log(`Cleared group caches, kept ${keep.length}`);
+      }
+      if (global.gc) {
+        global.gc();
+        console.log('Forced garbage collection');
+      }
+    } catch (e) {
+      console.error('Error during performMemoryCleanup:', e);
     }
   }
 
-  // Check for local session files
-  hasLocalSession() {
+  // -------------------------
+  // Local session detection (improved)
+  // -------------------------
+  /**
+   * Check local RemoteAuth-admin folder for a plausible session.
+   * We consider a session valid if:
+   * - folder exists
+   * - contains >= minFilesThreshold files
+   * - contains at least one .json or session-like file
+   *
+   * This is intentionally conservative: we don't delete or assume validity only by count.
+   */
+  hasLocalSession(minFilesThreshold = 4) {
     try {
       const sessionPath = path.join(this.authPath, 'RemoteAuth-admin');
-      if (fs.existsSync(sessionPath)) {
-        const files = fs.readdirSync(sessionPath);
-        const hasSessionFiles = files.length > 0;
-        console.log(`Local RemoteAuth session files: ${files.length} files`);
-        return hasSessionFiles;
-      }
-      return false;
+      if (!fs.existsSync(sessionPath)) return false;
+
+      const files = fs.readdirSync(sessionPath).filter(f => !f.startsWith('.'));
+      console.log(`Local RemoteAuth session files: ${files.length} files`);
+      if (files.length < minFilesThreshold) return false;
+
+      // quick check for json / session-like file names
+      const hasJsonLike = files.some(f => /\.(json|db|data|session|credentials)/i.test(f));
+      return hasJsonLike;
     } catch (error) {
       console.error('Error checking local session:', error);
       return false;
     }
   }
 
-  // Quick group fetch with limits
+  // wait until the RemoteAuth directory's file listing stabilizes (no changes) or timeout
+  async waitForSessionHydration(timeoutMs = 15000, pollIntervalMs = 750) {
+    const sessionPath = path.join(this.authPath, 'RemoteAuth-admin');
+    const deadline = Date.now() + timeoutMs;
+    let lastFiles = null;
+    let stableCount = 0;
+    while (Date.now() < deadline) {
+      // If folder doesn't exist yet, short sleep
+      if (!fs.existsSync(sessionPath)) {
+        await wait(pollIntervalMs);
+        continue;
+      }
+      const files = fs.readdirSync(sessionPath).filter(f => !f.startsWith('.'));
+      const filesKey = files.join(',');
+      if (filesKey === lastFiles) {
+        stableCount++;
+        // if stable for two consecutive checks we consider it hydrated
+        if (stableCount >= 2 && files.length > 0) {
+          // heuristic: must contain some json/session files
+          const hasJsonLike = files.some(f => /\.(json|db|data|session|credentials)/i.test(f));
+          if (hasJsonLike) {
+            this.isHydrated = true;
+            return true;
+          }
+        }
+      } else {
+        stableCount = 0;
+        lastFiles = filesKey;
+      }
+      await wait(pollIntervalMs);
+    }
+    // Timed out
+    return false;
+  }
+
+  // -------------------------
+  // Groups & queue helpers (kept from original)
+  // -------------------------
   async getGroups() {
     try {
       if (!this.client || !this.client.info) {
         console.log('Bot client not ready');
         return [];
       }
-
       console.time('QuickGroupFetch');
       const chats = await this.client.getChats();
       console.timeEnd('QuickGroupFetch');
-
       if (!Array.isArray(chats)) return [];
-
       const groups = [];
       let count = 0;
       const MAX_GROUPS = 50;
-
       for (const chat of chats) {
         if (count >= MAX_GROUPS) break;
         if (chat?.isGroup) {
@@ -167,25 +218,20 @@ class BotManager {
           count++;
         }
       }
-
       console.log(`Quickly loaded ${groups.length} groups`);
       return groups;
-
     } catch (error) {
       console.error('Error in quick groups fetch:', error);
       return [];
     }
   }
 
-  // Search groups by name
   async searchGroups(query) {
     try {
       if (!this.client || !this.client.info || !query || query.length < 2) return [];
-
       const chats = await this.client.getChats();
       const searchTerm = query.toLowerCase();
       const results = [];
-
       for (const chat of chats) {
         if (chat?.isGroup) {
           const name = (chat.name || chat.subject || '').toLowerCase();
@@ -198,24 +244,19 @@ class BotManager {
           }
         }
       }
-
       console.log(`Found ${results.length} groups matching "${query}"`);
       return results;
-
     } catch (error) {
       console.error('Error searching groups:', error);
       return [];
     }
   }
 
-  // Get only saved groups
   async getSavedGroups(groupIds) {
     try {
       if (!this.client || !this.client.info || !Array.isArray(groupIds) || groupIds.length === 0) return [];
-
       const chats = await this.client.getChats();
       const savedGroups = [];
-
       for (const groupId of groupIds) {
         const chat = chats.find(c => c?.isGroup && c.id?._serialized === groupId);
         if (chat) {
@@ -228,10 +269,8 @@ class BotManager {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
       }
-
       console.log(`Loaded ${savedGroups.length} saved groups`);
       return savedGroups;
-
     } catch (error) {
       console.error('Error loading saved groups:', error);
       return [];
@@ -243,7 +282,9 @@ class BotManager {
     return await this.getGroups(true);
   }
 
-  // Queue system
+  // -------------------------
+  // Queue logic (kept)
+  // -------------------------
   async addToQueue(message, chat, prompt, isSearchCommand) {
     const now = Date.now();
     if (now - this.lastCommandTime < this.minCommandInterval) {
@@ -285,9 +326,8 @@ class BotManager {
                          `*Position in queue:* ${queuePosition}\n` +
                          `*Estimated wait time:* ${queuePosition * 1} minute(s)\n\n` +
                          `_Only one message can be processed at a time across all groups._`;
-      
       try {
-        await message.reply(waitMessage);
+        await request.message.reply(waitMessage);
       } catch (error) {
         console.error(`[QUEUE] Failed to send queue notification:`, error);
       }
@@ -302,31 +342,24 @@ class BotManager {
       this.currentProcessingRequest = null;
       return;
     }
-
     this.isProcessing = true;
     const request = this.processingQueue[0];
     this.currentProcessingRequest = request;
-    
     console.log(`[QUEUE] Processing request. Group: ${request.groupName}, Remaining: ${this.processingQueue.length - 1}`);
-
     try {
       if (this.processingQueue.length > 1) {
         const startMessage = `*Starting to process your request...*\n\n` +
                             `_Please wait while I generate your response..._`;
         await request.message.reply(startMessage);
       }
-
       await this.executeCommand(request.message, request.chat, request.prompt, request.isSearchCommand);
-      
       this.processingQueue.shift();
       this.currentProcessingRequest = null;
       console.log(`[QUEUE] Request completed. Queue length: ${this.processingQueue.length}`);
-      
     } catch (error) {
       console.error(`[QUEUE] Error processing request for group ${request.groupName}:`, error);
       this.processingQueue.shift();
       this.currentProcessingRequest = null;
-      
       try {
         await request.message.reply('Sorry, there was an error processing your request. Please try again.');
       } catch (replyError) {
@@ -342,10 +375,11 @@ class BotManager {
     }
   }
 
-  // Command execution
+  // -------------------------
+  // Command execution (kept)
+  // -------------------------
   async executeCommand(message, chat, prompt, isSearchCommand) {
-    console.log(`[EXECUTE] Processing command: "${prompt.substring(0, 50)}..."`);
-    
+    console.log(`[EXECUTE] Processing command: "${(prompt || '').substring(0, 50)}..."`);
     try {
       const waMessages = await chat.fetchMessages({ limit: 50 });
       const metadata = await chat.groupMetadata;
@@ -356,7 +390,6 @@ class BotManager {
 
       const participantMap = new Map();
       const participantsToProcess = metadata.participants.slice(0, 30);
-      
       for (const participant of participantsToProcess) {
         try {
           const contact = await this.client.getContactById(participant.id);
@@ -395,7 +428,7 @@ class BotManager {
       if (isSearchCommand) {
         response = await this.callExternalAPISearch({
           messages: newMessages,
-          prompt: prompt,
+          prompt,
           groupName: chat.name,
           sender: senderFormatted,
           timestamp: new Date().toISOString(),
@@ -405,7 +438,7 @@ class BotManager {
       } else {
         response = await this.callExternalAPI({
           messages: newMessages,
-          prompt: prompt,
+          prompt,
           groupName: chat.name,
           sender: senderFormatted,
           timestamp: new Date().toISOString(),
@@ -413,11 +446,10 @@ class BotManager {
           newMessageCount: newMessages.length
         });
       }
-      
+
       console.log(`[EXECUTE] API response received`);
       await message.reply(response);
       console.log(`[EXECUTE] Reply sent successfully.`);
-
     } catch (error) {
       console.error(`[EXECUTE] Error in executeCommand:`, error);
       try {
@@ -428,69 +460,55 @@ class BotManager {
     }
   }
 
-  // In-memory message diffing
   getNewMessagesFromMemory(groupId, currentMessages) {
     const cachedMessages = this.groupCaches.get(groupId) || [];
-    
     if (cachedMessages.length === 0) {
       const messagesToCache = currentMessages.slice(-this.maxCachedMessages);
       this.groupCaches.set(groupId, messagesToCache);
       return currentMessages;
     }
-
     const cachedMessageMap = new Map();
     cachedMessages.forEach(msg => {
       const key = `${msg.timestamp}_${msg.user}_${msg.message.substring(0, 50)}`;
       cachedMessageMap.set(key, true);
     });
-
     const newMessages = currentMessages.filter(msg => {
       const key = `${msg.timestamp}_${msg.user}_${msg.message.substring(0, 50)}`;
       return !cachedMessageMap.has(key);
     });
-
     const updatedCache = currentMessages.slice(-this.maxCachedMessages);
     this.groupCaches.set(groupId, updatedCache);
-
     console.log(`[CACHE] Group ${groupId}: ${cachedMessages.length} cached, ${currentMessages.length} current, ${newMessages.length} new messages`);
     return newMessages;
   }
 
-  /**
-   * Zip the RemoteAuth session directory for Supabase
-   */
+  // -------------------------
+  // Session backup / restore helpers (kept, minor fixes)
+  // -------------------------
   async syncSessionToSupabase() {
     try {
       console.log('Zipping RemoteAuth session directory for Supabase...');
-
       const sessionPath = path.join(this.authPath, 'RemoteAuth-admin');
       if (!fs.existsSync(sessionPath)) {
         console.log('No RemoteAuth session directory found');
         return false;
       }
 
-      // Create a complete copy of the session directory
       const tempPath = path.join(this.authPath, 'temp-remoteauth-admin');
-      if (fs.existsSync(tempPath)) {
-        await fs.remove(tempPath);
-      }
+      if (fs.existsSync(tempPath)) await fs.remove(tempPath);
       await fs.copy(sessionPath, tempPath);
       console.log('Created temp copy of RemoteAuth session');
 
       const zipPath = path.join(this.authPath, 'remoteauth-session-backup.zip');
       const output = fs.createWriteStream(zipPath);
-      const archive = archiver('zip', { 
-        zlib: { level: 9 } 
-      });
+      const archive = archiver('zip', { zlib: { level: 9 } });
 
       return new Promise((resolve) => {
         output.on('close', async () => {
           const finalSize = archive.pointer();
-          console.log(`RemoteAuth session ZIP created: ${(finalSize/1024/1024).toFixed(2)} MB`);
-
+          console.log(`RemoteAuth session ZIP created: ${(finalSize / 1024 / 1024).toFixed(2)} MB`);
           try {
             const zipBuffer = await fs.readFile(zipPath);
-
             if (finalSize > 40 * 1024 * 1024) {
               console.log('Large session ZIP -> uploading in chunks...');
               const success = await this.uploadInChunks(zipBuffer);
@@ -498,27 +516,22 @@ class BotManager {
             } else {
               const fileName = `remoteauth-admin-${Date.now()}.zip`;
               const filePath = `backups/${fileName}`;
-
               const { error } = await this.store.supabase.storage
                 .from('whatsapp-sessions')
-                .upload(filePath, zipBuffer, { 
+                .upload(filePath, zipBuffer, {
                   upsert: true,
                   contentType: 'application/zip'
                 });
-
               if (error) throw error;
-
-              // Save metadata
               await this.store.save({
                 session: 'admin',
-                data: { 
-                  session_zip_path: filePath, 
+                data: {
+                  session_zip_path: filePath,
                   last_sync: new Date().toISOString(),
                   is_remoteauth: true,
                   sync_version: '3.0'
                 }
               });
-
               console.log(`RemoteAuth session uploaded: ${fileName}`);
               resolve(true);
             }
@@ -526,7 +539,6 @@ class BotManager {
             console.error('Upload failed:', e);
             resolve(false);
           } finally {
-            // Cleanup
             await fs.remove(tempPath).catch(() => {});
             await fs.remove(zipPath).catch(() => {});
           }
@@ -538,10 +550,7 @@ class BotManager {
         });
 
         archive.pipe(output);
-
-        // Add ALL files from the session directory recursively
         archive.glob('**/*', { cwd: tempPath, dot: true });
-
         archive.finalize();
       });
     } catch (e) {
@@ -552,32 +561,24 @@ class BotManager {
 
   async uploadInChunks(zipBuffer) {
     try {
-      const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB chunks
+      const CHUNK_SIZE = 10 * 1024 * 1024;
       const totalChunks = Math.ceil(zipBuffer.length / CHUNK_SIZE);
       const sessionId = `remoteauth-admin-${Date.now()}`;
       const chunkPaths = [];
-
       console.log(`Uploading ${totalChunks} chunks...`);
-
       for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, zipBuffer.length);
         const chunk = zipBuffer.slice(start, end);
-
         const chunkName = `${sessionId}-chunk-${i.toString().padStart(3, '0')}.bin`;
         const chunkPath = `chunks/${chunkName}`;
-
         const { error } = await this.store.supabase.storage
           .from('whatsapp-sessions')
           .upload(chunkPath, chunk);
-
         if (error) throw error;
-
         chunkPaths.push(chunkPath);
         console.log(`Uploaded chunk ${i + 1}/${totalChunks}`);
       }
-
-      // Save chunk metadata
       await this.store.save({
         session: 'admin',
         data: {
@@ -589,82 +590,10 @@ class BotManager {
           sync_version: '3.0'
         }
       });
-
       console.log('All chunks uploaded successfully');
       return true;
     } catch (error) {
       console.error('Chunk upload failed:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Restore RemoteAuth session from Supabase
-   */
-  async restoreSessionFromSupabase() {
-    try {
-      console.log('Restoring RemoteAuth session from Supabase...');
-      
-      const sessionData = await this.store.extract('admin');
-      if (!sessionData) {
-        console.log('No session data found in Supabase');
-        return false;
-      }
-
-      const sessionPath = path.join(this.authPath, 'RemoteAuth-admin');
-      
-      // Clear existing session completely
-      if (fs.existsSync(sessionPath)) {
-        await fs.remove(sessionPath);
-        console.log('Cleared existing RemoteAuth session directory');
-      }
-      
-      this.ensureDirectoryExists(sessionPath);
-
-      let zipBuffer;
-
-      if (sessionData.is_chunked && sessionData.session_chunks) {
-        console.log('Reassembling from chunks...');
-        zipBuffer = await this.downloadAndAssembleChunks(sessionData.session_chunks);
-      } else if (sessionData.session_zip_path) {
-        const { data, error } = await this.store.supabase.storage
-          .from('whatsapp-sessions')
-          .download(sessionData.session_zip_path);
-        if (error) throw error;
-        zipBuffer = Buffer.from(await data.arrayBuffer());
-      } else {
-        console.log('No valid session path found');
-        return false;
-      }
-
-      if (!zipBuffer || zipBuffer.length === 0) {
-        console.log('Empty zip buffer');
-        return false;
-      }
-
-      const zipPath = path.join(this.authPath, 'restore-remoteauth.zip');
-      await fs.writeFile(zipPath, zipBuffer);
-
-      // Extract complete session
-      const AdmZip = (await import('adm-zip')).default;
-      const zip = new AdmZip(zipPath);
-      zip.extractAllTo(sessionPath, true);
-
-      await fs.remove(zipPath);
-      
-      // Verify the restored session structure
-      const hasValidSession = this.hasLocalSession();
-      
-      if (hasValidSession) {
-        console.log('RemoteAuth session restored and verified successfully');
-        return true;
-      } else {
-        console.log('Restored RemoteAuth session structure is invalid');
-        return false;
-      }
-      
-    } catch (e) {
-      console.error('RemoteAuth session restore failed:', e);
       return false;
     }
   }
@@ -682,6 +611,7 @@ class BotManager {
         }
         chunks.push(Buffer.from(await data.arrayBuffer()));
       }
+      if (chunks.length === 0) return null;
       return Buffer.concat(chunks);
     } catch (error) {
       console.error('Chunk assembly failed:', error);
@@ -689,39 +619,90 @@ class BotManager {
     }
   }
 
-  // Bot status
-  getBotStatus() {
-    if (this.client && this.client.info) return 'connected';
-    if (this.hasLocalSession()) return 'session_exists';
-    return 'disconnected';
-  }
-
-  // Active groups persistence
-  saveActiveGroupsToDisk() {
-    try {
-      const dataPath = path.join(this.authPath, 'activeGroups.json');
-      fs.writeFileSync(dataPath, JSON.stringify(this.activeGroups, null, 2));
-      console.log('Active groups saved to disk:', this.activeGroups);
-    } catch (error) {
-      console.error('Error saving active groups:', error);
+  // -------------------------
+  // Restore from Supabase (HYBRID mode)
+  // -------------------------
+  async restoreSessionFromSupabase() {
+    if (this.isRestoring) {
+      console.log('Restore already in progress');
+      return false;
     }
-  }
-
-  loadActiveGroupsFromDisk() {
+    this.isRestoring = true;
     try {
-      const dataPath = path.join(this.authPath, 'activeGroups.json');
-      if (fs.existsSync(dataPath)) {
-        const data = fs.readFileSync(dataPath, 'utf8');
-        this.activeGroups = JSON.parse(data);
-        console.log('Active groups loaded from disk:', this.activeGroups);
+      console.log('Restoring RemoteAuth session from Supabase...');
+      const sessionData = await this.store.extract('admin');
+      if (!sessionData) {
+        console.log('No session data found in Supabase');
+        return false;
       }
-    } catch (error) {
-      console.error('Error loading active groups:', error);
-      this.activeGroups = [];
+
+      const sessionPath = path.join(this.authPath, 'RemoteAuth-admin');
+
+      // Clear existing session directory first (safe)
+      if (fs.existsSync(sessionPath)) {
+        try {
+          await fs.remove(sessionPath);
+          console.log('Cleared existing RemoteAuth session directory');
+        } catch (e) {
+          console.warn('Could not fully clear existing session directory:', e);
+        }
+      }
+      this.ensureDirectoryExists(sessionPath);
+
+      let zipBuffer = null;
+
+      if (sessionData.is_chunked && Array.isArray(sessionData.session_chunks) && sessionData.session_chunks.length) {
+        console.log('Reassembling from chunks...');
+        zipBuffer = await this.downloadAndAssembleChunks(sessionData.session_chunks);
+      } else if (sessionData.session_zip_path) {
+        const { data, error } = await this.store.supabase.storage
+          .from('whatsapp-sessions')
+          .download(sessionData.session_zip_path);
+        if (error) throw error;
+        zipBuffer = Buffer.from(await data.arrayBuffer());
+      } else {
+        console.log('No valid session path found in Supabase metadata');
+        return false;
+      }
+
+      if (!zipBuffer || zipBuffer.length === 0) {
+        console.log('Empty zip buffer received');
+        return false;
+      }
+
+      const zipPath = path.join(this.authPath, 'restore-remoteauth.zip');
+      await fs.writeFile(zipPath, zipBuffer);
+
+      // Extract
+      const AdmZip = (await import('adm-zip')).default;
+      const zip = new AdmZip(zipPath);
+      zip.extractAllTo(sessionPath, true);
+      await fs.remove(zipPath);
+
+      // Wait for the written files to stabilize
+      console.log('Waiting for session files to stabilize...');
+      const hydrated = await this.waitForSessionHydration(this.sessionRestoreTimeoutMs, this.restorePollIntervalMs);
+      if (!hydrated) {
+        console.warn('Session hydration timed out or files not stable after extraction');
+        // Partial restore may have happened; still continue but treat as not fully restored
+        this.isHydrated = false;
+        return false;
+      }
+
+      console.log('RemoteAuth session restored and verified successfully');
+      this.isHydrated = true;
+      return true;
+    } catch (e) {
+      console.error('RemoteAuth session restore failed:', e);
+      return false;
+    } finally {
+      this.isRestoring = false;
     }
   }
 
-  // Bot initialization with RemoteAuth
+  // -------------------------
+  // Initialization (Hybrid flow)
+  // -------------------------
   async initializeBot() {
     if (this.isInitializing) {
       console.log('Bot is already initializing...');
@@ -729,37 +710,50 @@ class BotManager {
     }
 
     this.isInitializing = true;
-    
     try {
       console.log('Initializing bot with RemoteAuth and manual Supabase sync...');
-      
-      const hasLocalSession = this.hasLocalSession();
-      console.log(`Local RemoteAuth session check: ${hasLocalSession}`);
-      
-      // If force QR is requested, skip session restoration
+
+      const hasLocal = this.hasLocalSession();
+      console.log(`Local RemoteAuth session check: ${hasLocal}`);
+
+      // If force QR requested, ignore restore and force QR
       if (this.forceQR) {
         console.log('Force QR mode - skipping session restoration');
         this.forceQR = false;
-      } else if (!hasLocalSession) {
-        console.log('No local RemoteAuth session found, checking Supabase...');
+      } else if (!hasLocal) {
+        console.log('No local session found -> attempting restore from Supabase (hybrid mode)');
         const restored = await this.restoreSessionFromSupabase();
         if (restored) {
-          console.log('RemoteAuth session restored successfully from Supabase');
+          console.log('Restore succeeded. Proceeding to initialize client using restored session.');
         } else {
-          console.log('No session found in Supabase, will require QR scan');
+          console.log('Restore failed or incomplete. Will allow QR fallback if needed.');
         }
       } else {
-        console.log('Using existing local RemoteAuth session');
+        console.log('Using existing local RemoteAuth session (no restore attempted)');
       }
-      
-      // Create client with RemoteAuth
+
+      // At this point: either we have a hydrated local session or we will start client and let RemoteAuth decide
+      // We make sure not to initialize while isRestoring is true
+      if (this.isRestoring) {
+        console.log('Still restoring session; delaying initialization until restore completes');
+        // Wait up to sessionRestoreTimeoutMs for restore to complete (defensive)
+        const deadline = Date.now() + this.sessionRestoreTimeoutMs;
+        while (this.isRestoring && Date.now() < deadline) {
+          await wait(500);
+        }
+      }
+
+      // If we were able to hydrate local session, ensure isHydrated true; otherwise keep fallback behavior
+      const authStrategy = new RemoteAuth({
+        clientId: 'admin',
+        dataPath: this.authPath,
+        store: this.store,
+        backupSyncIntervalMs: 5 * 60 * 1000,
+      });
+
+      // Create client
       this.client = new Client({
-        authStrategy: new RemoteAuth({
-          clientId: 'admin',
-          dataPath: this.authPath,
-          store: this.store,
-          backupSyncIntervalMs: 300000, // 5 minutes
-        }),
+        authStrategy,
         puppeteer: {
           headless: true,
           args: [
@@ -813,31 +807,37 @@ class BotManager {
         qrMaxRetries: 2,
       });
 
+      // Setup event handlers and initialize
       this.setupClientEvents();
       await this.client.initialize();
-      
     } catch (error) {
       console.error('Error initializing bot:', error);
-      this.emitToAllSockets('bot-error', { error: error.message });
+      try {
+        this.emitToAllSockets('bot-error', { error: error?.message || String(error) });
+      } catch (e) {
+        // swallow
+      }
+    } finally {
       this.isInitializing = false;
       this.isWaitingForSession = false;
     }
   }
 
-  // Client event setup
+  // -------------------------
+  // Client events
+  // -------------------------
   setupClientEvents() {
     if (!this.client) return;
 
     let qrGenerated = false;
 
     this.client.on('qr', async (qr) => {
-      console.log('QR code generated - scanning required');
-      qrGenerated = true;
-      
       try {
+        console.log('QR code generated - scanning required');
+        qrGenerated = true;
         const qrImage = await QRCode.toDataURL(qr);
         this.currentQrCode = qrImage;
-        this.emitToAllSockets('qr-code', { 
+        this.emitToAllSockets('qr-code', {
           qr: qrImage,
           canUseSession: this.hasLocalSession() && !this.forceQR
         });
@@ -851,8 +851,6 @@ class BotManager {
 
     this.client.on('loading_screen', (percent, message) => {
       console.log(`Loading Screen: ${percent}% - ${message}`);
-      
-      // If we have a valid session and loading is happening, we're authenticating
       if (this.hasLocalSession() && percent > 0 && !qrGenerated) {
         this.emitToAllSockets('bot-status', { status: 'authenticating_with_session' });
       }
@@ -865,32 +863,34 @@ class BotManager {
     });
 
     this.client.on('ready', async () => {
-      console.log('Bot connected successfully with RemoteAuth');
-      this.emitToAllSockets('bot-status', { status: 'connected' });
-      this.isInitializing = false;
-      this.isWaitingForSession = false;
-      this.sessionRetryAttempts = 0;
-      this.forceQR = false;
-      
-      // Clear QR code
-      this.currentQrCode = null;
-      
-      // Sync session to Supabase after a delay
-      setTimeout(async () => {
-        try {
-          const syncSuccess = await this.syncSessionToSupabase();
-          if (syncSuccess) {
-            console.log('RemoteAuth session successfully synced to Supabase');
+      try {
+        console.log('Bot connected successfully with RemoteAuth');
+        this.emitToAllSockets('bot-status', { status: 'connected' });
+        this.isInitializing = false;
+        this.isWaitingForSession = false;
+        this.sessionRetryAttempts = 0;
+        this.forceQR = false;
+        this.currentQrCode = null;
+
+        // Sync session to Supabase after a short delay to allow WA to settle writes
+        setTimeout(async () => {
+          try {
+            const syncSuccess = await this.syncSessionToSupabase();
+            if (syncSuccess) {
+              console.log('RemoteAuth session successfully synced to Supabase');
+            }
+          } catch (syncError) {
+            console.error('RemoteAuth session sync error:', syncError);
           }
-        } catch (syncError) {
-          console.error('RemoteAuth session sync error:', syncError);
-        }
-      }, 10000); // Wait 10 seconds after ready to ensure session is stable
+        }, 10000);
+      } catch (e) {
+        console.error('Error during ready handler:', e);
+      }
     });
 
     this.client.on('remote_session_saved', () => {
       console.log('RemoteAuth: Session saved to remote store');
-      // Trigger our manual sync as well for redundancy
+      // trigger manual sync for redundancy
       setTimeout(async () => {
         try {
           await this.syncSessionToSupabase();
@@ -904,133 +904,137 @@ class BotManager {
       console.error('Bot auth failed:', error);
       this.emitToAllSockets('bot-error', { error: 'Authentication failed' });
       this.isInitializing = false;
+      // Let RemoteAuth decide next steps - we don't forcibly reinit here
     });
 
     this.client.on('disconnected', async (reason) => {
-      console.log('Bot disconnected:', reason);
-      this.emitToAllSockets('bot-status', { status: 'disconnected' });
-      this.client = null;
-      this.isProcessing = false;
-      
-      // Clear memory
-      this.groupsCache.data = [];
-      this.groupsCache.lastUpdated = 0;
-      this.processingQueue = [];
-      this.currentProcessingRequest = null;
-      this.groupCaches.clear();
-      
-      // Restore from Supabase if local session lost
-      setTimeout(async () => {
-        console.log('Attempting to restore RemoteAuth session from Supabase...');
-        const hasLocalSession = this.hasLocalSession();
-        if (!hasLocalSession) {
-          console.log('No local RemoteAuth session found, restoring from Supabase...');
-          const restored = await this.restoreSessionFromSupabase();
-          if (restored) {
-            console.log('RemoteAuth session restored from Supabase, reinitializing...');
-          }
+      try {
+        console.log('Bot disconnected:', reason);
+        this.emitToAllSockets('bot-status', { status: 'disconnected' });
+        // destroy client reference to avoid double-inits
+        if (this.client) {
+          try { await this.client.destroy(); } catch (e) {}
+          this.client = null;
         }
-        this.initializeBot();
-      }, 5000);
+        this.isProcessing = false;
+        this.groupsCache = { data: [], lastUpdated: 0, cacheDuration: 5 * 60 * 1000, isUpdating: false };
+        this.processingQueue = [];
+        this.currentProcessingRequest = null;
+        this.groupCaches.clear();
+
+        // Attempt to restore and reinitialize after a small delay
+        setTimeout(async () => {
+          console.log('Attempting to restore RemoteAuth session from Supabase after disconnect...');
+          const hasLocal = this.hasLocalSession();
+          if (!hasLocal) {
+            const restored = await this.restoreSessionFromSupabase();
+            if (restored) {
+              console.log('RemoteAuth session restored from Supabase, reinitializing...');
+            } else {
+              console.log('No valid session available in Supabase after disconnect');
+            }
+          }
+          // Reinitialize (hybrid will decide QR fallback)
+          this.initializeBot();
+        }, 5000);
+      } catch (e) {
+        console.error('Error in disconnected handler:', e);
+      }
     });
 
     this.client.on('message', async (message) => {
-      await this.handleMessage(message);
+      try {
+        await this.handleMessage(message);
+      } catch (e) {
+        console.error('Error handling message event:', e);
+      }
     });
   }
 
-  // Stop bot with cleanup
+  // -------------------------
+  // Stop, clear, force QR
+  // -------------------------
   stopBot() {
-    console.log('Stopping bot and cleaning up memory...');
-    
-    if (this.client) {
-      this.client.destroy();
-      this.client = null;
+    try {
+      console.log('Stopping bot and cleaning up memory...');
+      if (this.client) {
+        try { this.client.destroy(); } catch (e) {}
+        this.client = null;
+      }
+      this.isInitializing = false;
+      this.processingQueue = [];
+      this.isProcessing = false;
+      this.currentProcessingRequest = null;
+      this.groupCaches.clear();
+      console.log('Bot stopped and memory cleaned up');
+    } catch (e) {
+      console.error('Error in stopBot:', e);
     }
-    
-    this.isInitializing = false;
-    this.processingQueue = [];
-    this.isProcessing = false;
-    this.currentProcessingRequest = null;
-    this.groupCaches.clear();
-    
-    console.log('Bot stopped and memory cleaned up');
   }
 
   setActiveGroups(groups) {
     this.activeGroups = groups;
     this.saveActiveGroupsToDisk();
-    this.emitToAllSockets('active-groups-updated', { groups: groups });
+    this.emitToAllSockets('active-groups-updated', { groups });
     console.log('Set active groups:', groups);
   }
 
-  // Message handling
+  // -------------------------
+  // Message handling helpers
+  // -------------------------
   async handleMessage(message) {
-    if (this.activeGroups.length === 0) return;
-    
-    const chat = await message.getChat();
-    if (!chat.isGroup) return;
-    
-    if (!this.activeGroups.includes(chat.id._serialized)) return;
-
-    const messageTimestamp = message.timestamp;
-    const twoMinutesAgo = Date.now() / 1000 - 120;
-    if (messageTimestamp < twoMinutesAgo) return;
-
-    const messageText = message.body;
-    
-    if (this.isBotCommand(messageText)) {
-      const isSearchCommand = messageText.toLowerCase().includes('!ai_search');
-      const prompt = this.extractPrompt(message.body, isSearchCommand);
-      
-      if (!prompt) return;
-
-      await this.addToQueue(message, chat, prompt, isSearchCommand);
+    try {
+      if (this.activeGroups.length === 0) return;
+      const chat = await message.getChat();
+      if (!chat.isGroup) return;
+      if (!this.activeGroups.includes(chat.id._serialized)) return;
+      const messageTimestamp = message.timestamp;
+      const twoMinutesAgo = Date.now() / 1000 - 120;
+      if (messageTimestamp < twoMinutesAgo) return;
+      const messageText = message.body || '';
+      if (this.isBotCommand(messageText)) {
+        const isSearchCommand = messageText.toLowerCase().includes('!ai_search');
+        const prompt = this.extractPrompt(message.body, isSearchCommand);
+        if (!prompt) return;
+        await this.addToQueue(message, chat, prompt, isSearchCommand);
+      }
+    } catch (e) {
+      console.error('Error in handleMessage:', e);
     }
   }
 
   isBotCommand(messageText) {
+    if (!messageText) return false;
     const commands = ['!bot', '!ai', '@bot', 'bot,', '!ai_search'];
     return commands.some(cmd => messageText.toLowerCase().includes(cmd));
   }
 
-  // API calls
+  // -------------------------
+  // API helpers
+  // -------------------------
   async callExternalAPI(payload) {
     const apiUrl = process.env.API_ENDPOINT;
     const generateEndpoint = `${apiUrl}/generate_real_time`;
-    
     console.log(`[API] Calling: ${generateEndpoint}`);
     console.log(`[API] Sending ${payload.messages.length} messages`);
-
     try {
-      const response = await axios.post(
-        generateEndpoint,
-        {
-          messages: payload.messages,
-          prompt: payload.prompt,
-          group_name: payload.groupName,
-          cache_info: {
-            total_messages: payload.totalMessageCount,
-            new_messages: payload.newMessageCount,
-            has_cached_context: payload.totalMessageCount > payload.newMessageCount
-          }
-        },
-        {
-          timeout: 10 * 60 * 1000,
-          headers: { 'Content-Type': 'application/json' },
+      const response = await axios.post(generateEndpoint, {
+        messages: payload.messages,
+        prompt: payload.prompt,
+        group_name: payload.groupName,
+        cache_info: {
+          total_messages: payload.totalMessageCount,
+          new_messages: payload.newMessageCount,
+          has_cached_context: payload.totalMessageCount > payload.newMessageCount
         }
-      );
-
-      const data = response.data;
-      return (
-        data.response ||
-        data.answer ||
-        data.text ||
-        'I received your message but cannot generate a response right now.'
-      );
-
+      }, {
+        timeout: 10 * 60 * 1000,
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = response.data || {};
+      return data.response || data.answer || data.text || 'I received your message but cannot generate a response right now.';
     } catch (error) {
-      console.error('API call failed:', error.message);
+      console.error('API call failed:', error?.message || error);
       return 'Sorry, there was an error processing your request. Please try again later.';
     }
   }
@@ -1038,53 +1042,39 @@ class BotManager {
   async callExternalAPISearch(payload) {
     const apiUrl = process.env.API_ENDPOINT;
     const generateEndpoint = `${apiUrl}/generate_realtime_search`;
-
     console.log(`[API-SEARCH] Calling: ${generateEndpoint}`);
-
     try {
-      const response = await axios.post(
-        generateEndpoint,
-        {
-          messages: payload.messages,
-          prompt: payload.prompt,
-          group_name: payload.groupName,
-          enable_search: true,
-          max_search_results: 3,
-          cache_info: {
-            total_messages: payload.totalMessageCount,
-            new_messages: payload.newMessageCount,
-            has_cached_context: payload.totalMessageCount > payload.newMessageCount
-          }
-        },
-        {
-          timeout: 10 * 60 * 1000,
-          headers: { 'Content-Type': 'application/json' },
+      const response = await axios.post(generateEndpoint, {
+        messages: payload.messages,
+        prompt: payload.prompt,
+        group_name: payload.groupName,
+        enable_search: true,
+        max_search_results: 3,
+        cache_info: {
+          total_messages: payload.totalMessageCount,
+          new_messages: payload.newMessageCount,
+          has_cached_context: payload.totalMessageCount > payload.newMessageCount
         }
-      );
-
-      const data = response.data;
-      
-      let responseText = data.response ||
-        data.answer ||
-        data.text ||
-        'I received your message but cannot generate a response right now.';
-      
+      }, {
+        timeout: 10 * 60 * 1000,
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = response.data || {};
+      let responseText = data.response || data.answer || data.text || 'I received your message but cannot generate a response right now.';
       if (data.search_info && data.search_info.search_query) {
         responseText += `\n\n*Search Info:* Queried "${data.search_info.search_query}"`;
         if (data.search_info.articles_found) {
           responseText += `, found ${data.search_info.articles_found} articles`;
         }
       }
-      
       return responseText;
-
     } catch (error) {
-      console.error('Search API call failed:', error.message);
+      console.error('Search API call failed:', error?.message || error);
       return 'Sorry, the search request failed. Please try again later or use !ai for a faster response.';
     }
   }
 
-  extractPrompt(messageText, isSearchCommand = false) {
+  extractPrompt(messageText = '', isSearchCommand = false) {
     if (isSearchCommand) {
       return messageText.replace(/(!ai_search)\s*/i, '').trim();
     } else {
@@ -1098,7 +1088,36 @@ class BotManager {
     console.log('Groups cache cleared');
   }
 
-  // Clear both local and Supabase sessions
+  // -------------------------
+  // Persistent active groups
+  // -------------------------
+  saveActiveGroupsToDisk() {
+    try {
+      const dataPath = path.join(this.authPath, 'activeGroups.json');
+      fs.writeFileSync(dataPath, JSON.stringify(this.activeGroups, null, 2));
+      console.log('Active groups saved to disk:', this.activeGroups);
+    } catch (error) {
+      console.error('Error saving active groups:', error);
+    }
+  }
+
+  loadActiveGroupsFromDisk() {
+    try {
+      const dataPath = path.join(this.authPath, 'activeGroups.json');
+      if (fs.existsSync(dataPath)) {
+        const data = fs.readFileSync(dataPath, 'utf8');
+        this.activeGroups = JSON.parse(data);
+        console.log('Active groups loaded from disk:', this.activeGroups);
+      }
+    } catch (error) {
+      console.error('Error loading active groups:', error);
+      this.activeGroups = [];
+    }
+  }
+
+  // -------------------------
+  // Clearing sessions / force QR
+  // -------------------------
   async clearSupabaseSession() {
     try {
       const sessionPath = path.join(this.authPath, 'RemoteAuth-admin');
@@ -1106,50 +1125,40 @@ class BotManager {
         await fs.remove(sessionPath);
         console.log('Local RemoteAuth session cleared');
       }
-      
-      await this.store.delete({ session: 'admin' });
+      // Note: SupabaseSessionStorage.delete expects a string session id
+      await this.store.delete('admin');
       console.log('Supabase session cleared');
-      
     } catch (error) {
       console.error('Error clearing sessions:', error);
     }
   }
 
-  // Force QR generation
   async forceQRGeneration() {
-    console.log('Force QR generation requested...');
-    this.forceQR = true;
-    
-    // Clear existing session
-    await this.clearSupabaseSession();
-    
-    // Stop current client
-    if (this.client) {
-      await this.client.destroy();
-      this.client = null;
+    try {
+      console.log('Force QR generation requested...');
+      this.forceQR = true;
+      await this.clearSupabaseSession();
+      if (this.client) {
+        try { await this.client.destroy(); } catch (e) {}
+        this.client = null;
+      }
+      this.isInitializing = false;
+      this.isWaitingForSession = false;
+      setTimeout(() => this.initializeBot(), 2000);
+      return true;
+    } catch (e) {
+      console.error('Error in forceQRGeneration:', e);
+      return false;
     }
-    
-    this.isInitializing = false;
-    this.isWaitingForSession = false;
-    
-    // Reinitialize to generate QR
-    setTimeout(() => {
-      this.initializeBot();
-    }, 2000);
-    
-    return true;
   }
 
-  // Manual session backup
   async backupSession() {
     try {
       console.log('Manual RemoteAuth session backup requested...');
       const success = await this.syncSessionToSupabase();
       return {
         success,
-        message: success ? 
-          'RemoteAuth session successfully backed up to Supabase' : 
-          'Session backup failed'
+        message: success ? 'RemoteAuth session successfully backed up to Supabase' : 'Session backup failed'
       };
     } catch (error) {
       console.error('Manual backup failed:', error);
@@ -1157,16 +1166,13 @@ class BotManager {
     }
   }
 
-  // Manual session restore
   async restoreSession() {
     try {
       console.log('Manual RemoteAuth session restore requested...');
       const success = await this.restoreSessionFromSupabase();
       return {
         success,
-        message: success ? 
-          'RemoteAuth session restored from Supabase. Please restart the bot.' : 
-          'Session restore failed - no valid session in Supabase'
+        message: success ? 'RemoteAuth session restored from Supabase. Please restart the bot.' : 'Session restore failed - no valid session in Supabase'
       };
     } catch (error) {
       console.error('Manual restore failed:', error);
@@ -1174,16 +1180,16 @@ class BotManager {
     }
   }
 
-  // Socket management
+  // -------------------------
+  // Socket helpers
+  // -------------------------
   addSocketConnection(socket) {
     this.socketConnections.push(socket);
     console.log('Socket connection added. Total connections:', this.socketConnections.length);
-    
-    this.emitToAllSockets('bot-status', { 
+    this.emitToAllSockets('bot-status', {
       status: this.getBotStatus(),
       qrCode: this.currentQrCode
     });
-    
     this.emitToAllSockets('active-groups-updated', { groups: this.activeGroups });
   }
 
@@ -1200,6 +1206,15 @@ class BotManager {
         console.error('Error emitting to socket:', error);
       }
     });
+  }
+
+  // -------------------------
+  // Status helpers
+  // -------------------------
+  getBotStatus() {
+    if (this.client && this.client.info) return 'connected';
+    if (this.hasLocalSession()) return 'session_exists';
+    return 'disconnected';
   }
 }
 
