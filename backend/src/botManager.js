@@ -487,6 +487,25 @@ class BotManager {
     }
   }
 
+  ensureAllDirectories() {
+    try {
+      // Ensure main auth directory
+      this.ensureDirectoryExists(this.authPath);
+      
+      // Ensure temporary session directory for RemoteAuth
+      const tempSessionDir = path.join(this.authPath, 'wwebjs_temp_session_admin');
+      this.ensureDirectoryExists(tempSessionDir);
+      
+      // Ensure the Default subdirectory that RemoteAuth expects
+      const defaultDir = path.join(tempSessionDir, 'Default');
+      this.ensureDirectoryExists(defaultDir);
+      
+      console.log('✅ All required directories created');
+    } catch (error) {
+      console.error('❌ Error creating directories:', error);
+    }
+  }
+
   // Bot initialization with RemoteAuth
   async initializeBot() {
     if (this.isInitializing) {
@@ -499,20 +518,26 @@ class BotManager {
     try {
       console.log('🚀 Initializing bot with RemoteAuth and Supabase storage...');
       
+      this.ensureAllDirectories();
+      
       // Clear sessions if force QR is requested
       if (this.forceQR) {
         console.log('🔄 Force QR mode - clearing existing sessions');
         await this.clearSupabaseSession();
         this.forceQR = false;
       }
-      
+
       // Create client with RemoteAuth
       this.client = new Client({
         authStrategy: new RemoteAuth({
           clientId: 'admin',
           dataPath: this.authPath,
           store: this.store,
-          backupSyncIntervalMs: 60000, // 1 minute for testing
+          backupSyncIntervalMs: 60000,
+          // ADD THESE OPTIONS TO PREVENT CLEANUP ERRORS:
+          puppeteer: {
+            userDataDir: path.join(this.authPath, 'wwebjs_temp_session_admin')
+          }
         }),
         puppeteer: {
           headless: true,
@@ -537,6 +562,8 @@ class BotManager {
           ],
           ignoreDefaultArgs: ['--disable-extensions', '--enable-automation'],
           timeout: 60000,
+          // ADD EXPLICIT USER DATA DIRECTORY:
+          userDataDir: path.join(this.authPath, 'wwebjs_temp_session_admin')
         },
         takeoverOnConflict: false,
         restartOnAuthFail: true,
