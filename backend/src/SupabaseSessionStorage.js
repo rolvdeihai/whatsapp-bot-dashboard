@@ -21,7 +21,7 @@ class SupabaseSessionStorage {
     
     // Add local backup path for ZIP files
     this.authPath = process.env.NODE_ENV === 'production' 
-      ? path.join('/tmp/whatsapp_auth', 'auth')
+      ? path.join('/tmp/whatsapp_auth')
       : path.join(__dirname, '../auth');
     
     this.ensureDirectoryExists(this.authPath);
