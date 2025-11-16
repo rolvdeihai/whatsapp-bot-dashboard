@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs-extra';
 import axios from 'axios';
 import SupabaseSessionStorage from './SupabaseSessionStorage.js';
+import { getMongooseStore } from './MongooseStore.js';
 
 // Add this at the top of your main file
 process.on('unhandledRejection', (reason, promise) => {
@@ -532,30 +533,26 @@ class BotManager {
       console.log('Bot is already initializing...');
       return;
     }
-
     this.isInitializing = true;
-    
+
     try {
-      console.log('🚀 Initializing bot with RemoteAuth and Supabase storage...');
-      
-      // Only ensure main auth directory exists
-      this.ensureDirectoryExists(this.authPath);
-      
-      // Clear sessions if force QR is requested
+      console.log('Initializing bot with RemoteAuth + Mongoose Store (MongoDB Atlas)...');
+
+      // Get the official mongoose store
+      const mongooseStore = await getMongooseStore();
+
+      // Clear session if force QR
       if (this.forceQR) {
-        console.log('🔄 Force QR mode - clearing existing sessions');
-        await this.clearSupabaseSession();
+        console.log('Force QR: Clearing existing session from MongoDB...');
+        await mongooseStore.delete({ session: 'RemoteAuth-admin' });
         this.forceQR = false;
       }
 
-      // Create client with RemoteAuth - let it manage userDataDir automatically
       this.client = new Client({
         authStrategy: new RemoteAuth({
           clientId: 'admin',
-          dataPath: this.authPath,
-          store: this.store,
+          store: mongooseStore,        // This is the official store
           backupSyncIntervalMs: 60000,
-          // No puppeteer options here - RemoteAuth manages it
         }),
         puppeteer: {
           headless: true,
@@ -567,20 +564,8 @@ class BotManager {
             '--no-first-run',
             '--no-zygote',
             '--disable-gpu',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
-            '--disable-ipc-flooding-protection',
-            '--disable-default-apps',
-            '--disable-translate',
-            '--disable-extensions',
-            '--aggressive-cache-discard',
             '--max_old_space_size=512',
-            '--password-store=basic',
           ],
-          ignoreDefaultArgs: ['--disable-extensions', '--enable-automation'],
-          timeout: 60000,
-          // No userDataDir here - RemoteAuth manages it
         },
         takeoverOnConflict: false,
         restartOnAuthFail: true,
@@ -588,12 +573,11 @@ class BotManager {
 
       this.setupClientEvents();
       await this.client.initialize();
-      
+
     } catch (error) {
-      console.error('❌ Error initializing bot:', error);
+      console.error('Error initializing bot:', error);
       this.emitToAllSockets('bot-error', { error: error.message });
       this.isInitializing = false;
-      this.isWaitingForSession = false;
     }
   }
 
@@ -842,21 +826,13 @@ class BotManager {
   }
 
   // Clear both local and Supabase sessions
-  async clearSupabaseSession() {
+  async clearSession() {
     try {
-      // Clear local session directory
-      const sessionPath = path.join(this.authPath, 'session-admin');
-      if (fs.existsSync(sessionPath)) {
-        await fs.remove(sessionPath);
-        console.log('✅ Local session directory cleared');
-      }
-      
-      // Clear from Supabase - use the correct RemoteAuth session ID
-      await this.store.delete({ session: 'RemoteAuth-admin' });
-      console.log('✅ Supabase session cleared for RemoteAuth-admin');
-      
+      const mongooseStore = await getMongooseStore();
+      await mongooseStore.delete({ session: 'RemoteAuth-admin' });
+      console.log('Session cleared from MongoDB Atlas');
     } catch (error) {
-      console.error('❌ Error clearing sessions:', error);
+      console.error('Error clearing MongoDB session:', error);
     }
   }
 
