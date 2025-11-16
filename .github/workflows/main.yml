@@ -28,6 +28,7 @@ jobs:
       API_ENDPOINT: ${{ secrets.API_ENDPOINT }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      MONGO_URI: ${{ secrets.MONGO_URI }}
 
     steps:
     - name: Checkout repository
@@ -90,6 +91,7 @@ jobs:
         echo "FRONTEND_URL=${FRONTEND_URL}" >> .env
         echo "SUPABASE_URL=${SUPABASE_URL}" >> .env
         echo "SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}" >> .env
+        echo "MONGO_URI=${MONGO_URI}" >> .env
 
     - name: Setup ngrok with custom domain
       run: |
