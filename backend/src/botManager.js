@@ -9,6 +9,7 @@ import fs from 'fs-extra';
 import axios from 'axios';
 import SupabaseSessionStorage from './SupabaseSessionStorage.js';
 import { getMongooseStore } from './MongooseStore.js';
+import { supabase } from './supabaseClient.js';
 
 // Add this at the top of your main file
 process.on('unhandledRejection', (reason, promise) => {
