@@ -7,7 +7,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs-extra';
 import axios from 'axios';
-import SupabaseSessionStorage from './SupabaseSessionStorage.js';
 import { getMongooseStore } from './MongooseStore.js';
 import { supabase } from './supabaseClient.js';
 
