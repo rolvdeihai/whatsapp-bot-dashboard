@@ -91,7 +91,7 @@ class BotManager {
     this.forceQR = false;
     
     this.startMemoryMonitoring();
-    this.loadActiveGroupsFromDisk();
+    this.loadActiveGroupsFromSupabase();
     this.initializeBot();
   }
 
@@ -491,26 +491,50 @@ class BotManager {
   }
 
   // Active groups persistence
-  saveActiveGroupsToDisk() {
+  async saveActiveGroupsToSupabase() {
     try {
-      const dataPath = path.join(this.authPath, 'activeGroups.json');
-      fs.writeFileSync(dataPath, JSON.stringify(this.activeGroups, null, 2));
-      console.log('Active groups saved to disk:', this.activeGroups);
-    } catch (error) {
-      console.error('Error saving active groups:', error);
+      const { error } = await supabase
+        .from('bot_settings')
+        .upsert({
+          key: 'active_groups',
+          value: this.activeGroups,
+        }, {
+          onConflict: 'key'
+        });
+
+      if (error) throw error;
+
+      console.log('Active groups saved to Supabase:', this.activeGroups);
+    } catch (err) {
+      console.error('Failed to save active groups to Supabase:', err);
     }
   }
 
-  loadActiveGroupsFromDisk() {
+  async loadActiveGroupsFromSupabase() {
     try {
-      const dataPath = path.join(this.authPath, 'activeGroups.json');
-      if (fs.existsSync(dataPath)) {
-        const data = fs.readFileSync(dataPath, 'utf8');
-        this.activeGroups = JSON.parse(data);
-        console.log('Active groups loaded from disk:', this.activeGroups);
+      const { data, error } = await supabase
+        .from('bot_settings')
+        .select('value')
+        .eq('key', 'active_groups')
+        .single();
+
+      if (error && error.code !== 'PGRST116') { // PGRST116 = no rows
+        console.error('Error loading active groups from Supabase:', error);
+        return;
       }
-    } catch (error) {
-      console.error('Error loading active groups:', error);
+
+      if (data && data.value) {
+        this.activeGroups = Array.isArray(data.value) ? data.value : [];
+        console.log('Active groups loaded from Supabase:', this.activeGroups);
+      } else {
+        this.activeGroups = [];
+        console.log('No active groups found in Supabase, starting empty');
+      }
+
+      // Notify all connected dashboards
+      this.emitToAllSockets('active-groups-updated', { groups: this.activeGroups });
+    } catch (err) {
+      console.error('Failed to load active groups from Supabase:', err);
       this.activeGroups = [];
     }
   }
@@ -626,6 +650,7 @@ class BotManager {
       
       // Clear QR code
       this.currentQrCode = null;
+      await this.loadActiveGroupsFromSupabase();
       
       console.log('RemoteAuth is automatically handling session persistence with Supabase');
     });
@@ -686,7 +711,7 @@ class BotManager {
 
   setActiveGroups(groups) {
     this.activeGroups = groups;
-    this.saveActiveGroupsToDisk();
+    this.saveActiveGroupsToSupabase();
     this.emitToAllSockets('active-groups-updated', { groups: groups });
     console.log('Set active groups:', groups);
   }
