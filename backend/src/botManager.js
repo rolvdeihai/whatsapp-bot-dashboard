@@ -60,8 +60,6 @@ class BotManager {
     this.ensureDirectoryExists(this.authPath);
     this.ensureDirectoryExists(this.cacheDir);
 
-    this.store = new SupabaseSessionStorage();
-
     // Group caching with lazy loading
     this.groupsCache = {
       data: [],
