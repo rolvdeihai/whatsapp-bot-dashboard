@@ -28,7 +28,7 @@ jobs:
       API_ENDPOINT: ${{ secrets.API_ENDPOINT }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      GITHUB_ACTIONS: 'true'  # This tells the bot to run in GitHub Actions mode
+      GITHUB_ACTIONS: 'false'  # This tells the bot to run in GitHub Actions mode
 
     steps:
     - name: Checkout repository
