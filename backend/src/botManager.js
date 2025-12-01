@@ -9,7 +9,7 @@ import axios from 'axios';
 import { supabase } from './supabaseClient.js';
 import { SupabaseRemoteAuthStore } from './SupabaseRemoteAuthStore.js';
 
-// Error handling for RemoteAuth cleanup
+// Error handling
 process.on('unhandledRejection', (reason, promise) => {
   console.log('🔶 Unhandled Rejection at:', promise, 'reason:', reason);
   
@@ -48,21 +48,28 @@ class BotManager {
       maxRetries: 3,
       currentRetries: 0,
       retryDelay: 5000,
-      maxSessionAge: 24 * 60 * 60 * 1000, // 24 hours
+      maxSessionAge: 24 * 60 * 60 * 1000,
       lastSessionTime: null
     };
     
     // Supabase store instance
     this.supabaseStore = null;
     
-    // Directories for caching
-    this.authPath = process.env.NODE_ENV === 'production' 
-      ? path.join('/tmp/whatsapp_auth')
-      : path.join(__dirname, '../auth');
+    // Check if running in GitHub Actions
+    this.isGithubActions = process.env.GITHUB_ACTIONS === 'true';
     
-    this.cacheDir = process.env.NODE_ENV === 'production'
-      ? '/tmp/group_cache'
-      : path.join(__dirname, '../group_cache');
+    // Configure paths based on environment
+    this.authPath = this.isGithubActions 
+      ? path.join('/tmp/whatsapp_auth_' + Date.now()) // Unique path for each CI run
+      : (process.env.NODE_ENV === 'production' 
+        ? path.join('/tmp/whatsapp_auth')
+        : path.join(__dirname, '../auth'));
+    
+    this.cacheDir = this.isGithubActions
+      ? path.join('/tmp/group_cache_' + Date.now())
+      : (process.env.NODE_ENV === 'production'
+        ? '/tmp/group_cache'
+        : path.join(__dirname, '../group_cache'));
     
     this.ensureDirectoryExists(this.authPath);
     this.ensureDirectoryExists(this.cacheDir);
@@ -75,72 +82,81 @@ class BotManager {
       isUpdating: false
     };
     
-    // Global queue with limits
+    // Global queue with limits (smaller for GitHub Actions)
     this.processingQueue = [];
     this.isProcessing = false;
     this.currentProcessingRequest = null;
-    this.maxQueueSize = 10;
+    this.maxQueueSize = this.isGithubActions ? 1 : 10;
     
-    // Rate limiting
+    // Rate limiting (slower for GitHub Actions)
     this.lastCommandTime = 0;
-    this.minCommandInterval = 3000;
+    this.minCommandInterval = this.isGithubActions ? 10000 : 3000;
     
-    // In-memory cache with limits
+    // In-memory cache with limits (smaller for GitHub Actions)
     this.groupCaches = new Map();
-    this.maxCachedGroups = 5;
-    this.maxCachedMessages = 30;
+    this.maxCachedGroups = this.isGithubActions ? 2 : 5;
+    this.maxCachedMessages = this.isGithubActions ? 10 : 30;
 
     this.sessionRetryAttempts = 0;
-    this.maxSessionRetries = 3;
+    this.maxSessionRetries = this.isGithubActions ? 1 : 3;
     this.isWaitingForSession = false;
     this.forceQR = false;
 
     // Supabase storage monitoring
     this.supabaseMonitor = {
       lastSizeCheck: 0,
-      checkInterval: 10 * 60 * 1000, // 10 minutes
+      checkInterval: 10 * 60 * 1000,
       lastPurgeTime: 0,
-      minPurgeInterval: 30 * 60 * 1000, // 30 minutes between purges
+      minPurgeInterval: 30 * 60 * 1000,
     };
 
-    // Start monitoring
-    setTimeout(() => {
-      this.startSupabaseMonitoring();
-    }, 10000);
+    // Start services only if not in GitHub Actions
+    if (!this.isGithubActions) {
+      setTimeout(() => {
+        this.startSupabaseMonitoring();
+      }, 10000);
+    }
     
     this.startMemoryMonitoring();
     this.loadActiveGroupsFromSupabase();
+    
+    // In GitHub Actions, always force new session
+    if (this.isGithubActions) {
+      console.log('⚙️ Running in GitHub Actions mode - forcing new session');
+      this.forceQR = true;
+    }
+    
     this.initializeBot();
   }
 
-  // Supabase monitoring system
+  // Supabase monitoring system (disabled in GitHub Actions)
   startSupabaseMonitoring() {
+    if (this.isGithubActions) return;
+    
     setInterval(async () => {
       await this.checkSupabaseStorage();
     }, this.supabaseMonitor.checkInterval);
     
-    // Initial check after 1 minute
     setTimeout(() => {
       this.checkSupabaseStorage();
     }, 60000);
   }
 
   async checkSupabaseStorage() {
+    if (this.isGithubActions) return;
+    
     try {
-      // Don't check if we just purged recently
       const now = Date.now();
       if (now - this.supabaseMonitor.lastPurgeTime < this.supabaseMonitor.minPurgeInterval) {
         return;
       }
 
-      // Check Supabase storage stats if store exists
       if (this.supabaseStore) {
         const stats = await this.supabaseStore.getStorageStats();
         console.log(`📊 Supabase session storage: ${stats.sessionsCount} sessions, ${stats.totalSizeMB}MB`);
         
-        // Clean up sessions older than 7 days if we have many sessions
         if (stats.sessionsCount > 5) {
-          const cleaned = await this.supabaseStore.cleanupOldSessions(7 * 24); // 7 days
+          const cleaned = await this.supabaseStore.cleanupOldSessions(7 * 24);
           if (cleaned > 0) {
             console.log(`🧹 Cleaned ${cleaned} old sessions from Supabase`);
             this.supabaseMonitor.lastPurgeTime = Date.now();
@@ -176,7 +192,11 @@ class BotManager {
     const usedMB = Math.round(used.heapUsed / 1024 / 1024);
     const totalMB = Math.round(used.heapTotal / 1024 / 1024);
     
-    console.log(`Memory usage: ${usedMB}MB / ${totalMB}MB`);
+    if (this.isGithubActions) {
+      console.log(`⚙️ Memory usage: ${usedMB}MB / ${totalMB}MB`);
+    } else {
+      console.log(`Memory usage: ${usedMB}MB / ${totalMB}MB`);
+    }
     
     if (usedMB > 200) {
       console.log('High memory usage detected, performing cleanup...');
@@ -271,6 +291,51 @@ class BotManager {
     await this.initializeBot();
   }
 
+  // GitHub Actions specific recovery
+  async githubActionsRecovery(error) {
+    console.log('⚙️ GitHub Actions recovery triggered');
+    
+    // Clear everything and start fresh
+    if (this.client) {
+      try {
+        await this.client.destroy();
+      } catch (e) {
+        console.log('Error destroying client:', e.message);
+      }
+      this.client = null;
+    }
+    
+    // Clear session from Supabase
+    await this.clearSession();
+    
+    // Clear local directories
+    try {
+      if (fs.existsSync(this.authPath)) {
+        await fs.remove(this.authPath);
+      }
+      if (fs.existsSync(this.cacheDir)) {
+        await fs.remove(this.cacheDir);
+      }
+    } catch (e) {
+      console.log('Error cleaning directories:', e.message);
+    }
+    
+    // Force QR
+    this.forceQR = true;
+    this.sessionRecovery.currentRetries = this.sessionRecovery.maxRetries;
+    
+    // Recreate directories
+    this.ensureDirectoryExists(this.authPath);
+    this.ensureDirectoryExists(this.cacheDir);
+    
+    // Wait before retry
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Reinitialize
+    this.isInitializing = false;
+    await this.initializeBot();
+  }
+
   // Detect session-related errors
   isSessionError(error) {
     const sessionErrors = [
@@ -305,7 +370,7 @@ class BotManager {
 
       const groups = [];
       let count = 0;
-      const MAX_GROUPS = 50;
+      const MAX_GROUPS = this.isGithubActions ? 10 : 50;
 
       for (const chat of chats) {
         if (count >= MAX_GROUPS) break;
@@ -396,6 +461,11 @@ class BotManager {
 
   // Queue system
   async addToQueue(message, chat, prompt, isSearchCommand) {
+    if (this.isGithubActions) {
+      await message.reply('GitHub Actions test mode: Command processing disabled');
+      return;
+    }
+    
     const now = Date.now();
     if (now - this.lastCommandTime < this.minCommandInterval) {
       try {
@@ -616,6 +686,16 @@ class BotManager {
 
   // Get Supabase storage status for dashboard
   async getSupabaseStatus() {
+    if (this.isGithubActions) {
+      return {
+        sessionsCount: 0,
+        totalSizeMB: 0,
+        lastCheck: new Date().toISOString(),
+        status: 'github_actions_mode',
+        storageType: 'Supabase PostgreSQL'
+      };
+    }
+    
     try {
       if (!this.supabaseStore) {
         return {
@@ -707,7 +787,7 @@ class BotManager {
     }
   }
 
-  // Bot initialization with Supabase store
+  // Bot initialization with GitHub Actions optimizations
   async initializeBot() {
     if (this.isInitializing) {
       console.log('Bot is already initializing...');
@@ -716,7 +796,11 @@ class BotManager {
     this.isInitializing = true;
 
     try {
-      console.log('🔄 Initializing bot with Supabase RemoteAuth...');
+      if (this.isGithubActions) {
+        console.log('⚙️ Initializing bot in GitHub Actions mode...');
+      } else {
+        console.log('🔄 Initializing bot with Supabase RemoteAuth...');
+      }
 
       // Create Supabase store
       this.supabaseStore = new SupabaseRemoteAuthStore('admin');
@@ -727,38 +811,64 @@ class BotManager {
         await this.clearSession();
       }
 
-      // Create WhatsApp client with RemoteAuth using Supabase store[citation:2]
+      // GitHub Actions optimized Puppeteer configuration
+      const puppeteerConfig = this.isGithubActions ? {
+        headless: 'new', // Use new headless mode
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu',
+          '--disable-extensions',
+          '--disable-software-rasterizer',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
+          '--window-size=1280,720',
+          '--single-process', // Critical for GitHub Actions memory limits
+        ],
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      } : {
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu',
+          '--max_old_space_size=512',
+        ],
+      };
+
       this.client = new Client({
         authStrategy: new RemoteAuth({
           clientId: 'admin',
           store: this.supabaseStore,
-          backupSyncIntervalMs: 60000,
+          backupSyncIntervalMs: this.isGithubActions ? 120000 : 60000,
+          dataPath: this.authPath,
         }),
-        puppeteer: {
-          headless: true,
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox', // Required for root privileges[citation:2]
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu',
-            '--max_old_space_size=512',
-          ],
-        },
+        puppeteer: puppeteerConfig,
         takeoverOnConflict: false,
         restartOnAuthFail: true,
+        qrMaxRetries: this.isGithubActions ? 2 : 5,
       });
 
       this.setupClientEvents();
       await this.client.initialize();
 
     } catch (error) {
-      console.error('❌ Error initializing bot:', error);
+      console.error('❌ Error initializing bot:', error.message);
       
-      // Check if this is a session-related error that requires recovery
-      if (this.isSessionError(error)) {
+      // GitHub Actions specific recovery
+      if (this.isGithubActions) {
+        console.log('⚙️ GitHub Actions: attempting quick recovery...');
+        await this.githubActionsRecovery(error);
+      } else if (this.isSessionError(error)) {
         console.log('🔄 Session error detected, attempting recovery...');
         await this.recoverFromSessionError(error);
       } else {
@@ -772,21 +882,15 @@ class BotManager {
   setupClientEvents() {
     if (!this.client) return;
 
-    let qrGenerated = false;
-
     this.client.on('qr', async (qr) => {
       console.log('🔶 QR code generated - scanning required');
-      qrGenerated = true;
       
-      // Reset retry counter when QR is generated
       this.sessionRecovery.currentRetries = 0;
       
       try {
         const qrImage = await QRCode.toDataURL(qr);
         this.currentQrCode = qrImage;
-        this.emitToAllSockets('qr-code', { 
-          qr: qrImage
-        });
+        this.emitToAllSockets('qr-code', { qr: qrImage });
         this.emitToAllSockets('bot-status', { 
           status: 'scan_qr',
           retryCount: this.sessionRecovery.currentRetries,
@@ -795,7 +899,6 @@ class BotManager {
         console.log('✅ QR code generated and sent to frontend');
       } catch (error) {
         console.error('❌ Error generating QR code:', error);
-        this.emitToAllSockets('bot-error', { error: 'Failed to generate QR code' });
       }
     });
 
@@ -804,30 +907,31 @@ class BotManager {
       this.emitToAllSockets('bot-status', { 
         status: 'loading', 
         percent, 
-        message,
-        retryCount: this.sessionRecovery.currentRetries,
-        maxRetries: this.sessionRecovery.maxRetries
+        message
       });
     });
 
     this.client.on('authenticated', () => {
       console.log('✅ Bot authenticated with RemoteAuth');
-      this.emitToAllSockets('bot-status', { 
-        status: 'authenticated',
-        retryCount: this.sessionRecovery.currentRetries,
-        maxRetries: this.sessionRecovery.maxRetries
-      });
+      this.emitToAllSockets('bot-status', { status: 'authenticated' });
       this.forceQR = false;
       this.sessionRecovery.currentRetries = 0;
     });
 
     this.client.on('ready', async () => {
       console.log('✅ Bot connected successfully with RemoteAuth');
-      this.emitToAllSockets('bot-status', { 
-        status: 'connected',
-        retryCount: this.sessionRecovery.currentRetries,
-        maxRetries: this.sessionRecovery.maxRetries
-      });
+      
+      // GitHub Actions specific behavior
+      if (this.isGithubActions) {
+        console.log('⚙️ GitHub Actions: Bot ready, closing gracefully for CI/CD');
+        // In GitHub Actions, we don't need to stay connected
+        setTimeout(() => {
+          console.log('⚙️ GitHub Actions: Test completed successfully');
+          process.exit(0);
+        }, 3000);
+      }
+      
+      this.emitToAllSockets('bot-status', { status: 'connected' });
       this.isInitializing = false;
       this.isWaitingForSession = false;
       this.sessionRetryAttempts = 0;
@@ -839,11 +943,13 @@ class BotManager {
       this.currentQrCode = null;
       await this.loadActiveGroupsFromSupabase();
       
-      // Check Supabase storage after successful connection
-      try {
-        await this.checkSupabaseStorage();
-      } catch (error) {
-        console.log('Could not check Supabase storage after connection');
+      // Check Supabase storage (only outside GitHub Actions)
+      if (!this.isGithubActions) {
+        try {
+          await this.checkSupabaseStorage();
+        } catch (error) {
+          console.log('Could not check Supabase storage after connection');
+        }
       }
       
       console.log('✅ Supabase RemoteAuth is automatically handling session persistence');
@@ -856,11 +962,7 @@ class BotManager {
 
     this.client.on('auth_failure', (error) => {
       console.error('❌ Bot auth failed:', error);
-      this.emitToAllSockets('bot-error', { 
-        error: 'Authentication failed',
-        retryCount: this.sessionRecovery.currentRetries,
-        maxRetries: this.sessionRecovery.maxRetries
-      });
+      this.emitToAllSockets('bot-error', { error: 'Authentication failed' });
       this.isInitializing = false;
     });
 
@@ -868,10 +970,9 @@ class BotManager {
       console.log('🔌 Bot disconnected:', reason);
       this.emitToAllSockets('bot-status', { 
         status: 'disconnected',
-        reason: reason,
-        retryCount: this.sessionRecovery.currentRetries,
-        maxRetries: this.sessionRecovery.maxRetries
+        reason: reason
       });
+      
       this.client = null;
       this.isProcessing = false;
       
@@ -882,14 +983,19 @@ class BotManager {
       this.currentProcessingRequest = null;
       this.groupCaches.clear();
       
-      // Auto-reconnect with session recovery
-      setTimeout(async () => {
-        console.log('🔄 Attempting to restore session via RemoteAuth...');
-        this.initializeBot();
-      }, 5000);
+      // Auto-reconnect only outside GitHub Actions
+      if (!this.isGithubActions) {
+        setTimeout(async () => {
+          console.log('🔄 Attempting to restore session via RemoteAuth...');
+          this.initializeBot();
+        }, 5000);
+      }
     });
 
     this.client.on('message', async (message) => {
+      // Skip message handling in GitHub Actions
+      if (this.isGithubActions) return;
+      
       await this.handleMessage(message);
     });
   }
@@ -922,6 +1028,9 @@ class BotManager {
 
   // Message handling
   async handleMessage(message) {
+    // Skip message handling in GitHub Actions
+    if (this.isGithubActions) return;
+    
     try {
       if (this.activeGroups.length === 0) return;
       
@@ -956,6 +1065,11 @@ class BotManager {
 
   // API calls
   async callExternalAPI(payload) {
+    // Skip API calls in GitHub Actions
+    if (this.isGithubActions) {
+      return 'GitHub Actions test mode: API call skipped';
+    }
+    
     const apiUrl = process.env.API_ENDPOINT;
     const generateEndpoint = `${apiUrl}/generate_real_time`;
     
@@ -996,6 +1110,11 @@ class BotManager {
   }
 
   async callExternalAPISearch(payload) {
+    // Skip API calls in GitHub Actions
+    if (this.isGithubActions) {
+      return 'GitHub Actions test mode: Search API call skipped';
+    }
+    
     const apiUrl = process.env.API_ENDPOINT;
     const generateEndpoint = `${apiUrl}/generate_realtime_search`;
 
@@ -1109,6 +1228,14 @@ class BotManager {
 
   // Manual purge method for dashboard
   async manualPurgeSessions(fullPurge = false) {
+    // Skip in GitHub Actions
+    if (this.isGithubActions) {
+      return {
+        success: false,
+        message: 'Manual purge disabled in GitHub Actions mode'
+      };
+    }
+    
     console.log(`🔧 Manual Supabase purge requested (full: ${fullPurge})`);
     return await this.purgeSupabaseSessions(fullPurge);
   }
@@ -1188,7 +1315,8 @@ class BotManager {
       memoryUsage: {
         heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
         heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
-      }
+      },
+      environment: this.isGithubActions ? 'github_actions' : (process.env.NODE_ENV || 'development')
     };
   }
 
