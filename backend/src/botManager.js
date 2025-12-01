@@ -7,13 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs-extra';
 import axios from 'axios';
-import { 
-  getMongooseStore, 
-  purgeSignalStoreCollections, 
-  getMongoDBSize, 
-  getDatabaseInfo,
-  isMongoDBConnected 
-} from './MongooseStore.js';
+import { getMongooseStore } from './MongooseStore.js';
 import { supabase } from './supabaseClient.js';
 
 // Add this at the top of your main file
@@ -54,15 +48,6 @@ class BotManager {
     this.isInitializing = false;
     this.currentQrCode = null;
     
-    // 🔥 ADD BACK: Session recovery settings
-    this.sessionRecovery = {
-      maxRetries: 3,
-      currentRetries: 0,
-      retryDelay: 5000, // 5 seconds
-      maxSessionAge: 24 * 60 * 60 * 1000, // 24 hours
-      lastSessionTime: null
-    };
-    
     // RemoteAuth configuration
     this.authPath = process.env.NODE_ENV === 'production' 
       ? path.join('/tmp/whatsapp_auth')
@@ -102,126 +87,10 @@ class BotManager {
     this.maxSessionRetries = 3;
     this.isWaitingForSession = false;
     this.forceQR = false;
-
-    // 🔥 ADD BACK: MongoDB quota monitoring
-    this.mongoDBMonitor = {
-      lastSizeCheck: 0,
-      checkInterval: 5 * 60 * 1000, // 5 minutes
-      sizeThreshold: 300, // MB - start purging when approaching 400MB
-      maxSize: 400, // MB - force purge when hitting 400MB
-      lastPurgeTime: 0,
-      minPurgeInterval: 2 * 60 * 1000, // 2 minutes between purges
-    };
-
-    // 🔥 ADD BACK: Start MongoDB monitoring
-    setTimeout(() => {
-      this.startMongoDBMonitoring();
-    }, 10000);
     
     this.startMemoryMonitoring();
     this.loadActiveGroupsFromSupabase();
     this.initializeBot();
-  }
-
-  // 🔥 ADD BACK: MongoDB monitoring system
-  startMongoDBMonitoring() {
-    setInterval(async () => {
-      await this.checkMongoDBSize();
-    }, this.mongoDBMonitor.checkInterval);
-    
-    // Initial check after 1 minute
-    setTimeout(() => {
-      this.checkMongoDBSize();
-    }, 60000);
-  }
-
-  async checkMongoDBSize() {
-    try {
-      // Don't check if we just purged recently
-      const now = Date.now();
-      if (now - this.mongoDBMonitor.lastPurgeTime < this.mongoDBMonitor.minPurgeInterval) {
-        return;
-      }
-
-      // Check if MongoDB is connected first
-      if (!isMongoDBConnected()) {
-        console.log('🔶 MongoDB not connected, skipping size check');
-        return;
-      }
-
-      // Get detailed database info including GridFS
-      const dbInfo = await getDatabaseInfo();
-      const totalSizeMB = dbInfo.dbStats.totalSizeMB;
-      const gridFSTotalMB = dbInfo.totalGridFSSizeMB;
-      
-      console.log(`📊 MongoDB total size: ${totalSizeMB}MB / ${this.mongoDBMonitor.maxSize}MB`);
-      console.log(`📁 GridFS size: ${gridFSTotalMB}MB`);
-      
-      // Log the largest collections
-      const largestCollections = Object.entries(dbInfo.allCollections)
-        .sort(([,a], [,b]) => b.sizeMB - a.sizeMB)
-        .slice(0, 5);
-      
-      console.log('📈 Largest collections:');
-      largestCollections.forEach(([name, stats]) => {
-        console.log(`   ${name}: ${stats.sizeMB}MB (${stats.count} documents)`);
-      });
-      
-      if (totalSizeMB >= this.mongoDBMonitor.maxSize) {
-        console.log(`🚨 MongoDB approaching quota limit (${totalSizeMB}MB), forcing aggressive purge`);
-        await this.handleMongoDBQuotaExceeded();
-      } else if (totalSizeMB >= this.mongoDBMonitor.sizeThreshold) {
-        console.log(`⚠️ MongoDB size getting large (${totalSizeMB}MB), performing preventive aggressive purge`);
-        await this.purgeMongoDBCollections(true);
-      }
-    } catch (error) {
-      console.error('Error checking MongoDB size:', error);
-    }
-  }
-
-  async handleMongoDBQuotaExceeded() {
-    console.log('🚨 CRITICAL: MongoDB quota exceeded, performing emergency purge and QR regeneration');
-    
-    // Force purge all collections aggressively
-    const purgeResult = await this.purgeMongoDBCollections(true);
-    
-    if (purgeResult.success) {
-      console.log('✅ Emergency purge completed, forcing QR regeneration');
-      // Small delay to let purge complete
-      setTimeout(() => {
-        this.forceQRGeneration();
-      }, 2000);
-    } else {
-      console.log('❌ Emergency purge failed, trying direct QR regeneration');
-      this.forceQRGeneration();
-    }
-  }
-
-  async purgeMongoDBCollections(forceFullPurge = false) {
-    try {
-      console.log('🧹 Purging MongoDB SignalStore collections...');
-      
-      const result = await purgeSignalStoreCollections(forceFullPurge);
-      
-      if (result.success) {
-        console.log(`✅ MongoDB collections purged: ${result.purgedCollections.join(', ')}`);
-        console.log(`📊 Documents deleted: ${result.totalDocumentsDeleted}`);
-        
-        // Update last purge time
-        this.mongoDBMonitor.lastPurgeTime = Date.now();
-        
-        if (forceFullPurge) {
-          console.log('🔄 Full purge completed, session will be reset');
-        }
-      } else {
-        console.error('❌ Failed to purge MongoDB collections:', result.error);
-      }
-      
-      return result;
-    } catch (error) {
-      console.error('❌ Error purging MongoDB collections:', error);
-      return { success: false, error: error.message };
-    }
   }
 
   // Safe directory creation
@@ -292,84 +161,6 @@ class BotManager {
       console.error('Error checking local session:', error);
       return false;
     }
-  }
-
-  // 🔥 ADD BACK: Session recovery methods
-  async shouldForceQR() {
-    // Force QR if we've exceeded max retries
-    if (this.sessionRecovery.currentRetries >= this.sessionRecovery.maxRetries) {
-      console.log(`🔄 Max session retries (${this.sessionRecovery.maxRetries}) exceeded, forcing QR`);
-      return true;
-    }
-    
-    // Force QR if session is too old
-    if (this.sessionRecovery.lastSessionTime) {
-      const sessionAge = Date.now() - this.sessionRecovery.lastSessionTime;
-      if (sessionAge > this.sessionRecovery.maxSessionAge) {
-        console.log(`🔄 Session is too old (${Math.round(sessionAge / (60 * 60 * 1000))} hours), forcing QR`);
-        return true;
-      }
-    }
-    
-    return this.forceQR;
-  }
-
-  async recoverFromSessionError(error) {
-    this.sessionRecovery.currentRetries++;
-    console.log(`🔄 Session recovery attempt ${this.sessionRecovery.currentRetries}/${this.sessionRecovery.maxRetries}`);
-    
-    // Clear current client
-    if (this.client) {
-      try {
-        await this.client.destroy();
-      } catch (e) {
-        console.log('Error destroying client during recovery:', e);
-      }
-      this.client = null;
-    }
-    
-    // Wait before retry
-    await new Promise(resolve => setTimeout(resolve, this.sessionRecovery.retryDelay));
-    
-    // Force QR if max retries reached
-    if (this.sessionRecovery.currentRetries >= this.sessionRecovery.maxRetries) {
-      console.log('🔄 Max retries reached, forcing QR generation');
-      await this.clearSession();
-      this.forceQR = true;
-    }
-    
-    // Reinitialize
-    this.isInitializing = false;
-    await this.initializeBot();
-  }
-
-  // 🔥 ADD BACK: Detect MongoDB quota errors
-  isMongoDBQuotaError(error) {
-    return (
-      error.code === 8000 || // AtlasError
-      error.codeName === 'AtlasError' ||
-      (error.message && error.message.includes('space quota')) ||
-      (error.message && error.message.includes('you are over your space quota')) ||
-      (error.message && error.message.includes('storage quota'))
-    );
-  }
-
-  // 🔥 ADD BACK: Detect session-related errors
-  isSessionError(error) {
-    const sessionErrors = [
-      'ProtocolError',
-      'Execution context was destroyed',
-      'Session',
-      'Authentication',
-      'No Page',
-      'Target closed'
-    ];
-    
-    return sessionErrors.some(errorType => 
-      error.name?.includes(errorType) || 
-      error.message?.includes(errorType) ||
-      error.originalMessage?.includes(errorType)
-    );
   }
 
   // Quick group fetch with limits
@@ -697,56 +488,6 @@ class BotManager {
     return 'disconnected';
   }
 
-  // 🔥 ADD BACK: Get MongoDB status for dashboard
-  async getMongoDBStatus() {
-    try {
-      // Check if MongoDB is connected first
-      if (!isMongoDBConnected()) {
-        return {
-          sizeMB: 0,
-          sizeGB: '0.00',
-          quotaMB: 512,
-          quotaUsedPercent: 0,
-          lastCheck: new Date().toISOString(),
-          isConnected: false,
-          needsPurge: false,
-          emergency: false,
-          status: 'disconnected',
-          error: 'MongoDB not connected'
-        };
-      }
-
-      const dbSize = await getMongoDBSize();
-      const sizeMB = Math.round(dbSize / 1024 / 1024);
-      
-      return {
-        sizeMB,
-        sizeGB: (sizeMB / 1024).toFixed(2),
-        quotaMB: 512,
-        quotaUsedPercent: Math.min(100, Math.round((sizeMB / 512) * 100)),
-        lastCheck: new Date().toISOString(),
-        isConnected: true,
-        needsPurge: sizeMB >= this.mongoDBMonitor.sizeThreshold,
-        emergency: sizeMB >= this.mongoDBMonitor.maxSize,
-        status: sizeMB === 0 ? 'fresh' : 'normal'
-      };
-    } catch (error) {
-      // ✅ Return safe defaults instead of crashing
-      return {
-        sizeMB: 0,
-        sizeGB: '0.00',
-        quotaMB: 512,
-        quotaUsedPercent: 0,
-        lastCheck: new Date().toISOString(),
-        isConnected: false,
-        needsPurge: false,
-        emergency: false,
-        status: 'error',
-        error: error.message
-      };
-    }
-  }
-
   // Active groups persistence
   async saveActiveGroupsToSupabase() {
     try {
@@ -808,7 +549,7 @@ class BotManager {
     }
   }
 
-  // 🔥 UPDATED: Bot initialization with session recovery and MongoDB handling
+  // Bot initialization with RemoteAuth
   async initializeBot() {
     if (this.isInitializing) {
       console.log('Bot is already initializing...');
@@ -817,40 +558,22 @@ class BotManager {
     this.isInitializing = true;
 
     try {
-      console.log('🔄 Initializing bot with RemoteAuth + Mongoose Store...');
+      console.log('Initializing bot with RemoteAuth + Mongoose Store (MongoDB Atlas)...');
 
-      // Get MongoDB store first to ensure connection
+      // Get the official mongoose store
       const mongooseStore = await getMongooseStore();
 
-      // Now check MongoDB size after connection is established
-      try {
-        const dbSize = await getMongoDBSize();
-        const sizeMB = Math.round(dbSize / 1024 / 1024);
-        console.log(`📊 Current MongoDB size: ${sizeMB}MB`);
-        
-        if (sizeMB >= this.mongoDBMonitor.maxSize) {
-          console.log('🚨 MongoDB quota exceeded during initialization, purging collections and forcing QR...');
-          await this.handleMongoDBQuotaExceeded();
-          this.isInitializing = false;
-          return;
-        } else if (sizeMB >= 350) { // More aggressive threshold for initialization
-          console.log('⚠️ MongoDB size high during init, performing preventive purge');
-          await this.purgeMongoDBCollections(true);
-        }
-      } catch (sizeError) {
-        console.log('🔶 Could not check MongoDB size during init, continuing...');
-      }
-
-      // Check if we should force QR due to failed attempts
-      if (await this.shouldForceQR()) {
-        console.log('🔄 Forcing QR generation due to session recovery');
-        await this.clearSession();
+      // Clear session if force QR
+      if (this.forceQR) {
+        console.log('Force QR: Clearing existing session from MongoDB...');
+        await mongooseStore.delete({ session: 'RemoteAuth-admin' });
+        this.forceQR = false;
       }
 
       this.client = new Client({
         authStrategy: new RemoteAuth({
           clientId: 'admin',
-          store: mongooseStore,
+          store: mongooseStore,        // This is the official store
           backupSyncIntervalMs: 60000,
         }),
         puppeteer: {
@@ -874,23 +597,9 @@ class BotManager {
       await this.client.initialize();
 
     } catch (error) {
-      console.error('❌ Error initializing bot:', error);
-      
-      // Check if this is a MongoDB quota error
-      if (this.isMongoDBQuotaError(error)) {
-        console.log('🚨 MongoDB quota error detected during initialization, handling...');
-        await this.handleMongoDBQuotaExceeded();
-        return;
-      }
-      
-      // Check if this is a session-related error that requires recovery
-      if (this.isSessionError(error)) {
-        console.log('🔄 Session error detected, attempting recovery...');
-        await this.recoverFromSessionError(error);
-      } else {
-        this.emitToAllSockets('bot-error', { error: error.message });
-        this.isInitializing = false;
-      }
+      console.error('Error initializing bot:', error);
+      this.emitToAllSockets('bot-error', { error: error.message });
+      this.isInitializing = false;
     }
   }
 
@@ -901,11 +610,8 @@ class BotManager {
     let qrGenerated = false;
 
     this.client.on('qr', async (qr) => {
-      console.log('🔶 QR code generated - scanning required');
+      console.log('QR code generated - scanning required');
       qrGenerated = true;
-      
-      // Reset retry counter when QR is generated
-      this.sessionRecovery.currentRetries = 0;
       
       try {
         const qrImage = await QRCode.toDataURL(qr);
@@ -913,91 +619,54 @@ class BotManager {
         this.emitToAllSockets('qr-code', { 
           qr: qrImage
         });
-        this.emitToAllSockets('bot-status', { 
-          status: 'scan_qr',
-          retryCount: this.sessionRecovery.currentRetries,
-          maxRetries: this.sessionRecovery.maxRetries
-        });
-        console.log('✅ QR code generated and sent to frontend');
+        this.emitToAllSockets('bot-status', { status: 'scan_qr' });
+        console.log('QR code generated and sent to frontend');
       } catch (error) {
-        console.error('❌ Error generating QR code:', error);
+        console.error('Error generating QR code:', error);
         this.emitToAllSockets('bot-error', { error: 'Failed to generate QR code' });
       }
     });
 
     this.client.on('loading_screen', (percent, message) => {
-      console.log(`📱 Loading Screen: ${percent}% - ${message}`);
-      this.emitToAllSockets('bot-status', { 
-        status: 'loading', 
-        percent, 
-        message,
-        retryCount: this.sessionRecovery.currentRetries,
-        maxRetries: this.sessionRecovery.maxRetries
-      });
+      console.log(`Loading Screen: ${percent}% - ${message}`);
+      this.emitToAllSockets('bot-status', { status: 'loading', percent, message });
     });
 
     this.client.on('authenticated', () => {
-      console.log('✅ Bot authenticated with RemoteAuth');
-      this.emitToAllSockets('bot-status', { 
-        status: 'authenticated',
-        retryCount: this.sessionRecovery.currentRetries,
-        maxRetries: this.sessionRecovery.maxRetries
-      });
+      console.log('Bot authenticated with RemoteAuth');
+      this.emitToAllSockets('bot-status', { status: 'authenticated' });
       this.forceQR = false;
-      this.sessionRecovery.currentRetries = 0;
     });
 
     this.client.on('ready', async () => {
-      console.log('✅ Bot connected successfully with RemoteAuth');
-      this.emitToAllSockets('bot-status', { 
-        status: 'connected',
-        retryCount: this.sessionRecovery.currentRetries,
-        maxRetries: this.sessionRecovery.maxRetries
-      });
+      console.log('Bot connected successfully with RemoteAuth');
+      this.emitToAllSockets('bot-status', { status: 'connected' });
       this.isInitializing = false;
       this.isWaitingForSession = false;
       this.sessionRetryAttempts = 0;
       this.forceQR = false;
-      this.sessionRecovery.currentRetries = 0;
-      this.sessionRecovery.lastSessionTime = Date.now();
       
       // Clear QR code
       this.currentQrCode = null;
       await this.loadActiveGroupsFromSupabase();
       
-      // 🔥 ADD BACK: Check MongoDB size after successful connection
-      try {
-        await this.checkMongoDBSize();
-      } catch (error) {
-        console.log('Could not check MongoDB size after connection');
-      }
-      
-      console.log('✅ RemoteAuth is automatically handling session persistence');
+      console.log('RemoteAuth is automatically handling session persistence with Supabase');
     });
 
     this.client.on('remote_session_saved', () => {
-      console.log('💾 Session saved to remote store');
+      console.log('Session saved to remote store (Supabase)');
       this.emitToAllSockets('bot-status', { status: 'session_saved' });
     });
 
     this.client.on('auth_failure', (error) => {
-      console.error('❌ Bot auth failed:', error);
-      this.emitToAllSockets('bot-error', { 
-        error: 'Authentication failed',
-        retryCount: this.sessionRecovery.currentRetries,
-        maxRetries: this.sessionRecovery.maxRetries
-      });
+      console.error('Bot auth failed:', error);
+      this.emitToAllSockets('bot-error', { error: 'Authentication failed' });
       this.isInitializing = false;
     });
 
     this.client.on('disconnected', async (reason) => {
-      console.log('🔌 Bot disconnected:', reason);
-      this.emitToAllSockets('bot-status', { 
-        status: 'disconnected',
-        reason: reason,
-        retryCount: this.sessionRecovery.currentRetries,
-        maxRetries: this.sessionRecovery.maxRetries
-      });
+      console.log('Bot disconnected:', reason);
+      this.emitToAllSockets('bot-status', { status: 'disconnected' });
       this.client = null;
       this.isProcessing = false;
       
@@ -1008,9 +677,9 @@ class BotManager {
       this.currentProcessingRequest = null;
       this.groupCaches.clear();
       
-      // Auto-reconnect with session recovery
+      // RemoteAuth will automatically restore from Supabase on next initialization
       setTimeout(async () => {
-        console.log('🔄 Attempting to restore session via RemoteAuth...');
+        console.log('Attempting to restore session via RemoteAuth...');
         this.initializeBot();
       }, 5000);
     });
@@ -1022,7 +691,7 @@ class BotManager {
 
   // Stop bot with cleanup
   stopBot() {
-    console.log('🛑 Stopping bot and cleaning up memory...');
+    console.log('Stopping bot and cleaning up memory...');
     
     if (this.client) {
       this.client.destroy();
@@ -1034,53 +703,39 @@ class BotManager {
     this.isProcessing = false;
     this.currentProcessingRequest = null;
     this.groupCaches.clear();
-    this.sessionRecovery.currentRetries = 0;
     
-    console.log('✅ Bot stopped and memory cleaned up');
+    console.log('Bot stopped and memory cleaned up');
   }
 
   setActiveGroups(groups) {
     this.activeGroups = groups;
     this.saveActiveGroupsToSupabase();
     this.emitToAllSockets('active-groups-updated', { groups: groups });
-    console.log('✅ Set active groups:', groups);
+    console.log('Set active groups:', groups);
   }
 
   // Message handling
   async handleMessage(message) {
-    try {
-      if (this.activeGroups.length === 0) return;
-      
-      const chat = await message.getChat();
-      if (!chat.isGroup) return;
-      
-      if (!this.activeGroups.includes(chat.id._serialized)) return;
+    if (this.activeGroups.length === 0) return;
+    
+    const chat = await message.getChat();
+    if (!chat.isGroup) return;
+    
+    if (!this.activeGroups.includes(chat.id._serialized)) return;
 
-      const messageTimestamp = message.timestamp;
-      const twoMinutesAgo = Date.now() / 1000 - 120;
-      if (messageTimestamp < twoMinutesAgo) return;
+    const messageTimestamp = message.timestamp;
+    const twoMinutesAgo = Date.now() / 1000 - 120;
+    if (messageTimestamp < twoMinutesAgo) return;
 
-      const messageText = message.body;
+    const messageText = message.body;
+    
+    if (this.isBotCommand(messageText)) {
+      const isSearchCommand = messageText.toLowerCase().includes('!ai_search');
+      const prompt = this.extractPrompt(message.body, isSearchCommand);
       
-      if (this.isBotCommand(messageText)) {
-        const isSearchCommand = messageText.toLowerCase().includes('!ai_search');
-        const prompt = this.extractPrompt(message.body, isSearchCommand);
-        
-        if (!prompt) return;
+      if (!prompt) return;
 
-        await this.addToQueue(message, chat, prompt, isSearchCommand);
-      }
-    } catch (error) {
-      // Catch MongoDB quota errors during message handling
-      if (this.isMongoDBQuotaError(error)) {
-        console.log('🚨 MongoDB quota error during message handling, scheduling emergency purge');
-        // Schedule emergency purge but don't block message processing
-        setTimeout(() => {
-          this.handleMongoDBQuotaExceeded();
-        }, 1000);
-      } else {
-        console.error('Error in handleMessage:', error);
-      }
+      await this.addToQueue(message, chat, prompt, isSearchCommand);
     }
   }
 
@@ -1190,26 +845,17 @@ class BotManager {
   clearGroupsCache() {
     this.groupsCache.data = [];
     this.groupsCache.lastUpdated = 0;
-    console.log('✅ Groups cache cleared');
+    console.log('Groups cache cleared');
   }
 
-  // 🔥 UPDATED: Clear both local and MongoDB sessions with purging
+  // Clear both local and Supabase sessions
   async clearSession() {
     try {
-      // First purge the collections
-      await this.purgeMongoDBCollections(true);
-     
-      // Then clear the main session
       const mongooseStore = await getMongooseStore();
       await mongooseStore.delete({ session: 'RemoteAuth-admin' });
-      console.log('✅ Session cleared from MongoDB Atlas');
-     
-      // Reset recovery state
-      this.sessionRecovery.currentRetries = 0;
-      this.sessionRecovery.lastSessionTime = null;
-     
+      console.log('Session cleared from MongoDB Atlas');
     } catch (error) {
-      console.error('❌ Error clearing MongoDB session:', error);
+      console.error('Error clearing MongoDB session:', error);
     }
   }
 
@@ -1217,10 +863,9 @@ class BotManager {
   async forceQRGeneration() {
     console.log('🔄 Force QR generation requested...');
     this.forceQR = true;
-    this.sessionRecovery.currentRetries = this.sessionRecovery.maxRetries; // Force QR immediately
     
     // Clear existing session
-    await this.clearSession();
+    await this.clearSupabaseSession();
     
     // Stop current client
     if (this.client) {
@@ -1245,51 +890,14 @@ class BotManager {
     return true;
   }
 
-  // 🔥 ADD BACK: Manual purge method for dashboard
-  async manualPurgeCollections(fullPurge = false) {
-    console.log(`🔧 Manual MongoDB purge requested (full: ${fullPurge})`);
-    return await this.purgeMongoDBCollections(fullPurge);
-  }
-
-  // 🔥 ADD BACK: Get session recovery status for frontend
-  getSessionRecoveryStatus() {
-    return {
-      currentRetries: this.sessionRecovery.currentRetries,
-      maxRetries: this.sessionRecovery.maxRetries,
-      lastSessionTime: this.sessionRecovery.lastSessionTime,
-      sessionAge: this.sessionRecovery.lastSessionTime ? 
-        Date.now() - this.sessionRecovery.lastSessionTime : null
-    };
-  }
-
-  // 🔥 ADD BACK: Get full status for dashboard (includes MongoDB)
-  getFullStatus() {
-    return {
-      botStatus: this.getBotStatus(),
-      qrCode: this.currentQrCode,
-      recoveryStatus: this.getSessionRecoveryStatus(),
-      mongodb: this.getMongoDBStatus(),
-      activeGroupsCount: this.activeGroups.length,
-      queueLength: this.processingQueue.length,
-      isProcessing: this.isProcessing,
-      memoryUsage: {
-        heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-        heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
-      }
-    };
-  }
-
   // Socket management
   addSocketConnection(socket) {
     this.socketConnections.push(socket);
     console.log('Socket connection added. Total connections:', this.socketConnections.length);
     
-    // Send full status on connect
     this.emitToAllSockets('bot-status', { 
       status: this.getBotStatus(),
-      qrCode: this.currentQrCode,
-      recoveryStatus: this.getSessionRecoveryStatus(),
-      fullStatus: this.getFullStatus()
+      qrCode: this.currentQrCode
     });
     
     this.emitToAllSockets('active-groups-updated', { groups: this.activeGroups });
