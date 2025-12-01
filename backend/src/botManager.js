@@ -1,5 +1,4 @@
-// whatsapp-bot-dashboard/backend/src/botManager.js
-
+// backend/src/botManager.js
 import pkg from 'whatsapp-web.js';
 const { Client, RemoteAuth } = pkg;
 import QRCode from 'qrcode';
@@ -7,33 +6,29 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs-extra';
 import axios from 'axios';
-import { getMongooseStore } from './MongooseStore.js';
 import { supabase } from './supabaseClient.js';
+import { SupabaseRemoteAuthStore } from './SupabaseRemoteAuthStore.js';
 
-// Add this at the top of your main file
+// Error handling for RemoteAuth cleanup
 process.on('unhandledRejection', (reason, promise) => {
   console.log('🔶 Unhandled Rejection at:', promise, 'reason:', reason);
   
-  // Ignore specific RemoteAuth cleanup errors
   if (reason.code === 'ENOENT' && reason.path && reason.path.includes('wwebjs_temp_session_admin')) {
     console.log('🔶 Ignoring RemoteAuth temporary directory cleanup error - this is normal');
     return;
   }
   
-  // For other errors, log them but don't crash
   console.error('🔶 Unhandled Rejection (non-critical):', reason);
 });
 
 process.on('uncaughtException', (error) => {
   console.error('🔴 Uncaught Exception:', error);
   
-  // Ignore specific file system errors from RemoteAuth
   if (error.code === 'ENOENT' && error.path && error.path.includes('wwebjs_temp_session_admin')) {
     console.log('🔶 Ignoring RemoteAuth file system error - this is normal');
     return;
   }
   
-  // For serious errors, you might want to restart
   console.error('🔴 Critical error,可能需要重启:', error);
 });
 
@@ -48,7 +43,19 @@ class BotManager {
     this.isInitializing = false;
     this.currentQrCode = null;
     
-    // RemoteAuth configuration
+    // Session recovery settings
+    this.sessionRecovery = {
+      maxRetries: 3,
+      currentRetries: 0,
+      retryDelay: 5000,
+      maxSessionAge: 24 * 60 * 60 * 1000, // 24 hours
+      lastSessionTime: null
+    };
+    
+    // Supabase store instance
+    this.supabaseStore = null;
+    
+    // Directories for caching
     this.authPath = process.env.NODE_ENV === 'production' 
       ? path.join('/tmp/whatsapp_auth')
       : path.join(__dirname, '../auth');
@@ -87,10 +94,62 @@ class BotManager {
     this.maxSessionRetries = 3;
     this.isWaitingForSession = false;
     this.forceQR = false;
+
+    // Supabase storage monitoring
+    this.supabaseMonitor = {
+      lastSizeCheck: 0,
+      checkInterval: 10 * 60 * 1000, // 10 minutes
+      lastPurgeTime: 0,
+      minPurgeInterval: 30 * 60 * 1000, // 30 minutes between purges
+    };
+
+    // Start monitoring
+    setTimeout(() => {
+      this.startSupabaseMonitoring();
+    }, 10000);
     
     this.startMemoryMonitoring();
     this.loadActiveGroupsFromSupabase();
     this.initializeBot();
+  }
+
+  // Supabase monitoring system
+  startSupabaseMonitoring() {
+    setInterval(async () => {
+      await this.checkSupabaseStorage();
+    }, this.supabaseMonitor.checkInterval);
+    
+    // Initial check after 1 minute
+    setTimeout(() => {
+      this.checkSupabaseStorage();
+    }, 60000);
+  }
+
+  async checkSupabaseStorage() {
+    try {
+      // Don't check if we just purged recently
+      const now = Date.now();
+      if (now - this.supabaseMonitor.lastPurgeTime < this.supabaseMonitor.minPurgeInterval) {
+        return;
+      }
+
+      // Check Supabase storage stats if store exists
+      if (this.supabaseStore) {
+        const stats = await this.supabaseStore.getStorageStats();
+        console.log(`📊 Supabase session storage: ${stats.sessionsCount} sessions, ${stats.totalSizeMB}MB`);
+        
+        // Clean up sessions older than 7 days if we have many sessions
+        if (stats.sessionsCount > 5) {
+          const cleaned = await this.supabaseStore.cleanupOldSessions(7 * 24); // 7 days
+          if (cleaned > 0) {
+            console.log(`🧹 Cleaned ${cleaned} old sessions from Supabase`);
+            this.supabaseMonitor.lastPurgeTime = Date.now();
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error checking Supabase storage:', error);
+    }
   }
 
   // Safe directory creation
@@ -146,7 +205,7 @@ class BotManager {
     }
   }
 
-  // Add the missing hasLocalSession method
+  // Check if local session exists
   hasLocalSession() {
     try {
       const sessionPath = path.join(this.authPath, 'session-admin');
@@ -161,6 +220,73 @@ class BotManager {
       console.error('Error checking local session:', error);
       return false;
     }
+  }
+
+  // Session recovery methods
+  async shouldForceQR() {
+    // Force QR if we've exceeded max retries
+    if (this.sessionRecovery.currentRetries >= this.sessionRecovery.maxRetries) {
+      console.log(`🔄 Max session retries (${this.sessionRecovery.maxRetries}) exceeded, forcing QR`);
+      return true;
+    }
+    
+    // Force QR if session is too old
+    if (this.sessionRecovery.lastSessionTime) {
+      const sessionAge = Date.now() - this.sessionRecovery.lastSessionTime;
+      if (sessionAge > this.sessionRecovery.maxSessionAge) {
+        console.log(`🔄 Session is too old (${Math.round(sessionAge / (60 * 60 * 1000))} hours), forcing QR`);
+        return true;
+      }
+    }
+    
+    return this.forceQR;
+  }
+
+  async recoverFromSessionError(error) {
+    this.sessionRecovery.currentRetries++;
+    console.log(`🔄 Session recovery attempt ${this.sessionRecovery.currentRetries}/${this.sessionRecovery.maxRetries}`);
+    
+    // Clear current client
+    if (this.client) {
+      try {
+        await this.client.destroy();
+      } catch (e) {
+        console.log('Error destroying client during recovery:', e);
+      }
+      this.client = null;
+    }
+    
+    // Wait before retry
+    await new Promise(resolve => setTimeout(resolve, this.sessionRecovery.retryDelay));
+    
+    // Force QR if max retries reached
+    if (this.sessionRecovery.currentRetries >= this.sessionRecovery.maxRetries) {
+      console.log('🔄 Max retries reached, forcing QR generation');
+      await this.clearSession();
+      this.forceQR = true;
+    }
+    
+    // Reinitialize
+    this.isInitializing = false;
+    await this.initializeBot();
+  }
+
+  // Detect session-related errors
+  isSessionError(error) {
+    const sessionErrors = [
+      'ProtocolError',
+      'Execution context was destroyed',
+      'Session',
+      'Authentication',
+      'No Page',
+      'Target closed'
+    ];
+    
+    return sessionErrors.some(errorType => 
+      error.name?.includes(errorType) || 
+      error.message?.includes(errorType) ||
+      error.originalMessage?.includes(errorType)
+    );
   }
 
   // Quick group fetch with limits
@@ -488,6 +614,40 @@ class BotManager {
     return 'disconnected';
   }
 
+  // Get Supabase storage status for dashboard
+  async getSupabaseStatus() {
+    try {
+      if (!this.supabaseStore) {
+        return {
+          sessionsCount: 0,
+          totalSizeMB: 0,
+          lastCheck: new Date().toISOString(),
+          status: 'store_not_initialized',
+          storageType: 'Supabase PostgreSQL'
+        };
+      }
+
+      const stats = await this.supabaseStore.getStorageStats();
+      
+      return {
+        sessionsCount: stats.sessionsCount,
+        totalSizeMB: stats.totalSizeMB,
+        lastCheck: stats.lastUpdated,
+        status: 'connected',
+        storageType: 'Supabase PostgreSQL'
+      };
+    } catch (error) {
+      return {
+        sessionsCount: 0,
+        totalSizeMB: 0,
+        lastCheck: new Date().toISOString(),
+        status: 'error',
+        error: error.message,
+        storageType: 'Supabase PostgreSQL'
+      };
+    }
+  }
+
   // Active groups persistence
   async saveActiveGroupsToSupabase() {
     try {
@@ -537,11 +697,9 @@ class BotManager {
     }
   }
 
-  // Remove or simplify ensureAllDirectories - just ensure the main auth path
+  // Ensure main directory exists
   ensureAllDirectories() {
     try {
-      // Only ensure the main auth directory exists
-      // RemoteAuth will create its own temporary directories automatically
       this.ensureDirectoryExists(this.authPath);
       console.log('✅ Main auth directory ensured');
     } catch (error) {
@@ -549,7 +707,7 @@ class BotManager {
     }
   }
 
-  // Bot initialization with RemoteAuth
+  // Bot initialization with Supabase store
   async initializeBot() {
     if (this.isInitializing) {
       console.log('Bot is already initializing...');
@@ -558,29 +716,29 @@ class BotManager {
     this.isInitializing = true;
 
     try {
-      console.log('Initializing bot with RemoteAuth + Mongoose Store (MongoDB Atlas)...');
+      console.log('🔄 Initializing bot with Supabase RemoteAuth...');
 
-      // Get the official mongoose store
-      const mongooseStore = await getMongooseStore();
-
-      // Clear session if force QR
-      if (this.forceQR) {
-        console.log('Force QR: Clearing existing session from MongoDB...');
-        await mongooseStore.delete({ session: 'RemoteAuth-admin' });
-        this.forceQR = false;
+      // Create Supabase store
+      this.supabaseStore = new SupabaseRemoteAuthStore('admin');
+      
+      // Check if we should force QR due to failed attempts
+      if (await this.shouldForceQR()) {
+        console.log('🔄 Forcing QR generation due to session recovery');
+        await this.clearSession();
       }
 
+      // Create WhatsApp client with RemoteAuth using Supabase store[citation:2]
       this.client = new Client({
         authStrategy: new RemoteAuth({
           clientId: 'admin',
-          store: mongooseStore,        // This is the official store
+          store: this.supabaseStore,
           backupSyncIntervalMs: 60000,
         }),
         puppeteer: {
           headless: true,
           args: [
             '--no-sandbox',
-            '--disable-setuid-sandbox',
+            '--disable-setuid-sandbox', // Required for root privileges[citation:2]
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
@@ -597,9 +755,16 @@ class BotManager {
       await this.client.initialize();
 
     } catch (error) {
-      console.error('Error initializing bot:', error);
-      this.emitToAllSockets('bot-error', { error: error.message });
-      this.isInitializing = false;
+      console.error('❌ Error initializing bot:', error);
+      
+      // Check if this is a session-related error that requires recovery
+      if (this.isSessionError(error)) {
+        console.log('🔄 Session error detected, attempting recovery...');
+        await this.recoverFromSessionError(error);
+      } else {
+        this.emitToAllSockets('bot-error', { error: error.message });
+        this.isInitializing = false;
+      }
     }
   }
 
@@ -610,8 +775,11 @@ class BotManager {
     let qrGenerated = false;
 
     this.client.on('qr', async (qr) => {
-      console.log('QR code generated - scanning required');
+      console.log('🔶 QR code generated - scanning required');
       qrGenerated = true;
+      
+      // Reset retry counter when QR is generated
+      this.sessionRecovery.currentRetries = 0;
       
       try {
         const qrImage = await QRCode.toDataURL(qr);
@@ -619,54 +787,91 @@ class BotManager {
         this.emitToAllSockets('qr-code', { 
           qr: qrImage
         });
-        this.emitToAllSockets('bot-status', { status: 'scan_qr' });
-        console.log('QR code generated and sent to frontend');
+        this.emitToAllSockets('bot-status', { 
+          status: 'scan_qr',
+          retryCount: this.sessionRecovery.currentRetries,
+          maxRetries: this.sessionRecovery.maxRetries
+        });
+        console.log('✅ QR code generated and sent to frontend');
       } catch (error) {
-        console.error('Error generating QR code:', error);
+        console.error('❌ Error generating QR code:', error);
         this.emitToAllSockets('bot-error', { error: 'Failed to generate QR code' });
       }
     });
 
     this.client.on('loading_screen', (percent, message) => {
-      console.log(`Loading Screen: ${percent}% - ${message}`);
-      this.emitToAllSockets('bot-status', { status: 'loading', percent, message });
+      console.log(`📱 Loading Screen: ${percent}% - ${message}`);
+      this.emitToAllSockets('bot-status', { 
+        status: 'loading', 
+        percent, 
+        message,
+        retryCount: this.sessionRecovery.currentRetries,
+        maxRetries: this.sessionRecovery.maxRetries
+      });
     });
 
     this.client.on('authenticated', () => {
-      console.log('Bot authenticated with RemoteAuth');
-      this.emitToAllSockets('bot-status', { status: 'authenticated' });
+      console.log('✅ Bot authenticated with RemoteAuth');
+      this.emitToAllSockets('bot-status', { 
+        status: 'authenticated',
+        retryCount: this.sessionRecovery.currentRetries,
+        maxRetries: this.sessionRecovery.maxRetries
+      });
       this.forceQR = false;
+      this.sessionRecovery.currentRetries = 0;
     });
 
     this.client.on('ready', async () => {
-      console.log('Bot connected successfully with RemoteAuth');
-      this.emitToAllSockets('bot-status', { status: 'connected' });
+      console.log('✅ Bot connected successfully with RemoteAuth');
+      this.emitToAllSockets('bot-status', { 
+        status: 'connected',
+        retryCount: this.sessionRecovery.currentRetries,
+        maxRetries: this.sessionRecovery.maxRetries
+      });
       this.isInitializing = false;
       this.isWaitingForSession = false;
       this.sessionRetryAttempts = 0;
       this.forceQR = false;
+      this.sessionRecovery.currentRetries = 0;
+      this.sessionRecovery.lastSessionTime = Date.now();
       
       // Clear QR code
       this.currentQrCode = null;
       await this.loadActiveGroupsFromSupabase();
       
-      console.log('RemoteAuth is automatically handling session persistence with Supabase');
+      // Check Supabase storage after successful connection
+      try {
+        await this.checkSupabaseStorage();
+      } catch (error) {
+        console.log('Could not check Supabase storage after connection');
+      }
+      
+      console.log('✅ Supabase RemoteAuth is automatically handling session persistence');
     });
 
     this.client.on('remote_session_saved', () => {
-      console.log('Session saved to remote store (Supabase)');
+      console.log('💾 Session saved to remote store');
       this.emitToAllSockets('bot-status', { status: 'session_saved' });
     });
 
     this.client.on('auth_failure', (error) => {
-      console.error('Bot auth failed:', error);
-      this.emitToAllSockets('bot-error', { error: 'Authentication failed' });
+      console.error('❌ Bot auth failed:', error);
+      this.emitToAllSockets('bot-error', { 
+        error: 'Authentication failed',
+        retryCount: this.sessionRecovery.currentRetries,
+        maxRetries: this.sessionRecovery.maxRetries
+      });
       this.isInitializing = false;
     });
 
     this.client.on('disconnected', async (reason) => {
-      console.log('Bot disconnected:', reason);
-      this.emitToAllSockets('bot-status', { status: 'disconnected' });
+      console.log('🔌 Bot disconnected:', reason);
+      this.emitToAllSockets('bot-status', { 
+        status: 'disconnected',
+        reason: reason,
+        retryCount: this.sessionRecovery.currentRetries,
+        maxRetries: this.sessionRecovery.maxRetries
+      });
       this.client = null;
       this.isProcessing = false;
       
@@ -677,9 +882,9 @@ class BotManager {
       this.currentProcessingRequest = null;
       this.groupCaches.clear();
       
-      // RemoteAuth will automatically restore from Supabase on next initialization
+      // Auto-reconnect with session recovery
       setTimeout(async () => {
-        console.log('Attempting to restore session via RemoteAuth...');
+        console.log('🔄 Attempting to restore session via RemoteAuth...');
         this.initializeBot();
       }, 5000);
     });
@@ -691,7 +896,7 @@ class BotManager {
 
   // Stop bot with cleanup
   stopBot() {
-    console.log('Stopping bot and cleaning up memory...');
+    console.log('🛑 Stopping bot and cleaning up memory...');
     
     if (this.client) {
       this.client.destroy();
@@ -703,39 +908,44 @@ class BotManager {
     this.isProcessing = false;
     this.currentProcessingRequest = null;
     this.groupCaches.clear();
+    this.sessionRecovery.currentRetries = 0;
     
-    console.log('Bot stopped and memory cleaned up');
+    console.log('✅ Bot stopped and memory cleaned up');
   }
 
   setActiveGroups(groups) {
     this.activeGroups = groups;
     this.saveActiveGroupsToSupabase();
     this.emitToAllSockets('active-groups-updated', { groups: groups });
-    console.log('Set active groups:', groups);
+    console.log('✅ Set active groups:', groups);
   }
 
   // Message handling
   async handleMessage(message) {
-    if (this.activeGroups.length === 0) return;
-    
-    const chat = await message.getChat();
-    if (!chat.isGroup) return;
-    
-    if (!this.activeGroups.includes(chat.id._serialized)) return;
-
-    const messageTimestamp = message.timestamp;
-    const twoMinutesAgo = Date.now() / 1000 - 120;
-    if (messageTimestamp < twoMinutesAgo) return;
-
-    const messageText = message.body;
-    
-    if (this.isBotCommand(messageText)) {
-      const isSearchCommand = messageText.toLowerCase().includes('!ai_search');
-      const prompt = this.extractPrompt(message.body, isSearchCommand);
+    try {
+      if (this.activeGroups.length === 0) return;
       
-      if (!prompt) return;
+      const chat = await message.getChat();
+      if (!chat.isGroup) return;
+      
+      if (!this.activeGroups.includes(chat.id._serialized)) return;
 
-      await this.addToQueue(message, chat, prompt, isSearchCommand);
+      const messageTimestamp = message.timestamp;
+      const twoMinutesAgo = Date.now() / 1000 - 120;
+      if (messageTimestamp < twoMinutesAgo) return;
+
+      const messageText = message.body;
+      
+      if (this.isBotCommand(messageText)) {
+        const isSearchCommand = messageText.toLowerCase().includes('!ai_search');
+        const prompt = this.extractPrompt(message.body, isSearchCommand);
+        
+        if (!prompt) return;
+
+        await this.addToQueue(message, chat, prompt, isSearchCommand);
+      }
+    } catch (error) {
+      console.error('Error in handleMessage:', error);
     }
   }
 
@@ -845,17 +1055,23 @@ class BotManager {
   clearGroupsCache() {
     this.groupsCache.data = [];
     this.groupsCache.lastUpdated = 0;
-    console.log('Groups cache cleared');
+    console.log('✅ Groups cache cleared');
   }
 
-  // Clear both local and Supabase sessions
+  // Clear session from Supabase
   async clearSession() {
     try {
-      const mongooseStore = await getMongooseStore();
-      await mongooseStore.delete({ session: 'RemoteAuth-admin' });
-      console.log('Session cleared from MongoDB Atlas');
+      if (this.supabaseStore) {
+        await this.supabaseStore.delete({ session: 'RemoteAuth-admin' });
+        console.log('✅ Session cleared from Supabase');
+      }
+      
+      // Reset recovery state
+      this.sessionRecovery.currentRetries = 0;
+      this.sessionRecovery.lastSessionTime = null;
+      
     } catch (error) {
-      console.error('Error clearing MongoDB session:', error);
+      console.error('❌ Error clearing Supabase session:', error);
     }
   }
 
@@ -863,9 +1079,10 @@ class BotManager {
   async forceQRGeneration() {
     console.log('🔄 Force QR generation requested...');
     this.forceQR = true;
+    this.sessionRecovery.currentRetries = this.sessionRecovery.maxRetries;
     
     // Clear existing session
-    await this.clearSupabaseSession();
+    await this.clearSession();
     
     // Stop current client
     if (this.client) {
@@ -890,14 +1107,102 @@ class BotManager {
     return true;
   }
 
+  // Manual purge method for dashboard
+  async manualPurgeSessions(fullPurge = false) {
+    console.log(`🔧 Manual Supabase purge requested (full: ${fullPurge})`);
+    return await this.purgeSupabaseSessions(fullPurge);
+  }
+
+  async purgeSupabaseSessions(fullPurge = false) {
+    try {
+      console.log('🧹 Purging Supabase sessions...');
+      
+      if (!this.supabaseStore) {
+        return { success: false, error: 'Supabase store not initialized' };
+      }
+      
+      if (fullPurge) {
+        // Delete all sessions
+        const sessions = await this.supabaseStore.list();
+        let deletedCount = 0;
+        
+        for (const session of sessions) {
+          const baseSession = session.id.replace('admin-', '');
+          await this.supabaseStore.delete({ session: baseSession });
+          deletedCount++;
+        }
+        
+        this.supabaseMonitor.lastPurgeTime = Date.now();
+        
+        return {
+          success: true,
+          deletedCount,
+          message: `Deleted ${deletedCount} sessions from Supabase`,
+          forceFullPurge: true
+        };
+      } else {
+        // Just clean up old sessions (older than 24 hours)
+        const deletedCount = await this.supabaseStore.cleanupOldSessions(24);
+        
+        this.supabaseMonitor.lastPurgeTime = Date.now();
+        
+        return {
+          success: true,
+          deletedCount,
+          message: `Cleaned up ${deletedCount} old sessions`,
+          forceFullPurge: false
+        };
+      }
+    } catch (error) {
+      console.error('❌ Error purging Supabase sessions:', error);
+      return {
+        success: false,
+        error: error.message,
+        deletedCount: 0,
+        forceFullPurge: false
+      };
+    }
+  }
+
+  // Get session recovery status for frontend
+  getSessionRecoveryStatus() {
+    return {
+      currentRetries: this.sessionRecovery.currentRetries,
+      maxRetries: this.sessionRecovery.maxRetries,
+      lastSessionTime: this.sessionRecovery.lastSessionTime,
+      sessionAge: this.sessionRecovery.lastSessionTime ? 
+        Date.now() - this.sessionRecovery.lastSessionTime : null
+    };
+  }
+
+  // Get full status for dashboard (includes Supabase)
+  getFullStatus() {
+    return {
+      botStatus: this.getBotStatus(),
+      qrCode: this.currentQrCode,
+      recoveryStatus: this.getSessionRecoveryStatus(),
+      supabase: this.getSupabaseStatus(),
+      activeGroupsCount: this.activeGroups.length,
+      queueLength: this.processingQueue.length,
+      isProcessing: this.isProcessing,
+      memoryUsage: {
+        heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
+      }
+    };
+  }
+
   // Socket management
   addSocketConnection(socket) {
     this.socketConnections.push(socket);
     console.log('Socket connection added. Total connections:', this.socketConnections.length);
     
+    // Send full status on connect
     this.emitToAllSockets('bot-status', { 
       status: this.getBotStatus(),
-      qrCode: this.currentQrCode
+      qrCode: this.currentQrCode,
+      recoveryStatus: this.getSessionRecoveryStatus(),
+      fullStatus: this.getFullStatus()
     });
     
     this.emitToAllSockets('active-groups-updated', { groups: this.activeGroups });
