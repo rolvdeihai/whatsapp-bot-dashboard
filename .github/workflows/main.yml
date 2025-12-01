@@ -27,8 +27,7 @@ jobs:
       PORT: ${{ secrets.PORT }}
       API_ENDPOINT: ${{ secrets.API_ENDPOINT }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}  # NEW: for RemoteAuth
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       GITHUB_ACTIONS: 'true'  # This tells the bot to run in GitHub Actions mode
 
     steps:
@@ -40,6 +39,7 @@ jobs:
       with:
         node-version: '20.x'
         cache: 'npm'
+        cache-dependency-path: 'backend/package-lock.json'
 
     - name: Install Chromium and dependencies
       run: |
@@ -48,7 +48,7 @@ jobs:
           chromium-browser \
           ca-certificates \
           fonts-liberation \
-          libasound2 \
+          libasound2t64 \
           libatk-bridge2.0-0 \
           libatk1.0-0 \
           libc6 \
@@ -81,83 +81,123 @@ jobs:
           wget \
           xdg-utils
 
-    - name: Install dependencies
-      run: npm ci
+    - name: Install Node.js dependencies
+      run: |
+        npm ci
+        # Install ngrok globally for the ngrok step
+        npm install -g ngrok
 
     - name: Create .env file from secrets
       run: |
-        echo "PORT=${PORT}" > .env
-        echo "NODE_ENV=${NODE_ENV}" >> .env
-        echo "API_ENDPOINT=${API_ENDPOINT}" >> .env
-        echo "FRONTEND_URL=${FRONTEND_URL}" >> .env
-        echo "SUPABASE_URL=${SUPABASE_URL}" >> .env
-        echo "SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}" >> .env
-        echo "SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}" >> .env  # NEW
-        echo "GITHUB_ACTIONS=true" >> .env  # NEW
-        echo "# MONGO_URI is no longer used - sessions stored in Supabase" >> .env
+        echo "PORT=${{ secrets.PORT }}" > .env
+        echo "NODE_ENV=${{ secrets.NODE_ENV }}" >> .env
+        echo "API_ENDPOINT=${{ secrets.API_ENDPOINT }}" >> .env
+        echo "FRONTEND_URL=${{ secrets.FRONTEND_URL }}" >> .env
+        echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
+        echo "SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" >> .env
+        echo "GITHUB_ACTIONS=true" >> .env
+        echo "# Note: MONGO_URI is no longer needed - using Supabase instead" >> .env
 
-    - name: Setup ngrok with custom domain
+    - name: Setup ngrok tunnel (background process)
       run: |
-        npx ngrok@latest http 5000 --domain=arturo-nonclarified-chivalrously.ngrok-free.dev &
-        echo "Ngrok tunnel started with custom domain"
-        sleep 5
+        # Start ngrok in background
+        ngrok http 5000 --domain=arturo-nonclarified-chivalrously.ngrok-free.dev --log=stdout > ngrok.log 2>&1 &
+        NGORK_PID=$!
+        echo "NGROK_PID=$NGORK_PID" >> $GITHUB_ENV
+        
+        # Wait for ngrok to start
+        sleep 10
+        
+        # Get the public URL
+        curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' > ngrok_url.txt
+        echo "Ngrok URL: $(cat ngrok_url.txt)"
+        
+        # Update Supabase with ngrok URL (if you have webhooks)
+        NGROK_URL=$(cat ngrok_url.txt)
+        echo "NGROK_URL=$NGROK_URL" >> $GITHUB_ENV
       env:
         NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
 
-    - name: Clean previous sessions (GitHub Actions mode always uses new sessions)
+    - name: Clean previous session directories
       run: |
-        echo "🧹 Cleaning previous sessions for GitHub Actions..."
-        rm -rf /tmp/whatsapp-auth/*
+        echo "🧹 Cleaning previous session directories..."
+        rm -rf /tmp/whatsapp_auth_* 2>/dev/null || true
+        rm -rf /tmp/group_cache_* 2>/dev/null || true
         rm -rf ./auth 2>/dev/null || true
 
-    - name: Start WhatsApp Bot (GitHub Actions mode)
+    - name: Start WhatsApp Bot (with automatic shutdown)
       run: |
         export NODE_OPTIONS="--max-old-space-size=512"
         export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
         export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
         
         echo "🚀 Starting WhatsApp Bot in GitHub Actions mode..."
-        echo "Bot will connect, verify it works, then exit (for CI/CD)"
+        echo "Bot will automatically exit after successful connection"
         
-        # Run bot with timeout - it will auto-exit after connection in GitHub Actions mode
+        # Start the bot with a timeout
         timeout 300 npm start || {
           EXIT_CODE=$?
           if [ $EXIT_CODE -eq 124 ]; then
-            echo "✅ Bot test completed (timed out after 5 minutes - expected for CI/CD)"
+            echo "⚠️ Bot startup timed out after 5 minutes"
           else
-            echo "⚠️ Bot exited with code: $EXIT_CODE"
+            echo "❌ Bot exited with error code: $EXIT_CODE"
           fi
         }
         
-        echo "🎯 GitHub Actions test session completed"
+        echo "✅ Bot session completed or timed out"
         
-        # Force cleanup of any remaining processes
-        pkill -f "node.*src/index.js" 2>/dev/null || true
-        pkill -f ngrok 2>/dev/null || true
+        # Kill ngrok process
+        if [ ! -z "$NGROK_PID" ]; then
+          echo "🛑 Stopping ngrok..."
+          kill $NGROK_PID 2>/dev/null || true
+        fi
+      env:
+        NGROK_PID: ${{ env.NGROK_PID }}
 
-    - name: Upload session data (optional - for debugging)
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: whatsapp-session-debug
-        path: |
-          /tmp/whatsapp_auth_*
-          /tmp/group_cache_*
-        retention-days: 1
-
-    - name: Upload logs
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: bot-logs-${{ github.run_id }}
-        path: |
-          *.log
-          logs/
-        retention-days: 7
-
-    - name: Final cleanup
+    - name: Save logs
       if: always()
       run: |
-        echo "🧹 Final cleanup..."
+        echo "📄 Saving logs..."
+        
+        # Save bot logs if available
+        if [ -f "bot.log" ]; then
+          cp bot.log bot_run_$(date +%Y%m%d_%H%M%S).log
+        fi
+        
+        # Save ngrok logs
+        if [ -f "ngrok.log" ]; then
+          cp ngrok.log ngrok_run_$(date +%Y%m%d_%H%M%S).log
+        fi
+        
+        # List session files
+        echo "📁 Session files:"
+        find /tmp -name "*whatsapp*" -type d 2>/dev/null || echo "No session files found"
+
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bot-artifacts-${{ github.run_id }}
+        path: |
+          ngrok_url.txt
+          ngrok.log
+          bot.log
+          *.log
+        retention-days: 7
+
+    - name: Cleanup
+      if: always()
+      run: |
+        echo "🧹 Cleaning up..."
+        
+        # Kill any remaining processes
+        pkill -f "node.*src/index.js" 2>/dev/null || true
+        pkill -f ngrok 2>/dev/null || true
         pkill -f chromium 2>/dev/null || true
-        echo "✅ Cleanup done"
+        
+        # Clean temporary directories
+        rm -rf /tmp/whatsapp_auth_* 2>/dev/null || true
+        rm -rf /tmp/group_cache_* 2>/dev/null || true
+        rm -rf /tmp/.org.chromium.Chromium.* 2>/dev/null || true
+        
+        echo "✅ Cleanup completed"
