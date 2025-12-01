@@ -7,15 +7,13 @@ on:
       - 'backend/**'
   workflow_dispatch:
   schedule:
-    # Run at 8:00 AM UTC (first 6-hour session)
     - cron: '0 8 * * *'
-    # Run at 2:00 PM UTC (second 6-hour session)  
     - cron: '0 14 * * *'
 
 jobs:
   deploy-and-run:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours timeout for each session
+    timeout-minutes: 360
     
     defaults:
       run:
@@ -28,7 +26,6 @@ jobs:
       API_ENDPOINT: ${{ secrets.API_ENDPOINT }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      # REMOVED: GITHUB_ACTIONS: 'true' - This tells bot to run in PRODUCTION mode
 
     steps:
     - name: Checkout repository
@@ -91,7 +88,6 @@ jobs:
         echo "FRONTEND_URL=${FRONTEND_URL}" >> .env
         echo "SUPABASE_URL=${SUPABASE_URL}" >> .env
         echo "SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}" >> .env
-        echo "# Session will be restored from Supabase" >> .env
 
     - name: Setup ngrok with custom domain
       run: |
@@ -101,46 +97,11 @@ jobs:
       env:
         NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
 
-    - name: Clean previous sessions (production uses Supabase session persistence)
-      run: |
-        echo "🧹 Cleaning previous local sessions..."
-        rm -rf /tmp/whatsapp-auth/*
-        rm -rf ./auth 2>/dev/null || true
-        echo "✅ Session will be restored from Supabase"
-
-    - name: Start WhatsApp Bot (Production Mode - runs for 6 hours)
+    - name: Start WhatsApp Bot
       run: |
         export NODE_OPTIONS="--max-old-space-size=512"
         export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
         export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
         
-        echo "🚀 Starting WhatsApp Bot in PRODUCTION mode..."
-        echo "Bot will run for the full 6-hour session"
-        echo "Session persistence: Supabase RemoteAuth"
-        
-        # Run bot in production mode (will not auto-exit)
+        echo "🚀 Starting WhatsApp Bot..."
         npm start
-        
-        echo "✅ Production bot session completed (after 6 hours or manual stop)"
-
-    - name: Save session to Supabase (automatic via RemoteAuth)
-      if: always()
-      run: |
-        echo "💾 Session automatically saved to Supabase via RemoteAuth"
-        echo "Next run will restore from Supabase"
-
-    - name: Upload logs for debugging
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: production-logs-${{ github.run_id }}
-        path: |
-          *.log
-        retention-days: 7
-
-    - name: Final cleanup
-      if: always()
-      run: |
-        echo "🧹 Final cleanup..."
-        pkill -f ngrok 2>/dev/null || true
-        echo "✅ Cleanup done"
